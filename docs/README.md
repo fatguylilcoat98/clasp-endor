@@ -20,6 +20,8 @@ Documentation for the Lylo Companion golden master template.
   owner records before creating an instance.
 - `governance/baseline-ci.md` — what the baseline CI enforces, and what
   is scaffold / deferred.
+- `governance/companion-configuration-boundary.md` — what belongs to the
+  platform forever, and what is configurable per companion instance.
 
 ## Deployment
 
@@ -28,5 +30,5 @@ Documentation for the Lylo Companion golden master template.
 
 ## Status
 
-GM-2. The `deployment/` section is a placeholder until a later GM PR
+GM-4. The `deployment/` section is a placeholder until a later GM PR
 populates it.
