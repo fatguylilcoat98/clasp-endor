@@ -28,10 +28,10 @@ function describeDbError(err) {
 }
 
 // Create the connection pool. The connection string is held only by the
-// pool object; it is never logged. An optional `log` callback receives
-// the coarse class of any idle-pool error so a transient backend
-// failure does not become an unhandled 'error' event (and crash the
-// process).
+// pool object; it is never logged. An optional structured `log`
+// callback receives `(level, event, fields)` for any idle-pool error,
+// so a transient backend failure does not become an unhandled 'error'
+// event (and crash the process).
 function createPool(databaseUrl, options) {
   const opts = options || {};
   const log = opts.log || (() => {});
@@ -43,7 +43,7 @@ function createPool(databaseUrl, options) {
     statement_timeout: 5000,
   });
   pool.on('error', (err) => {
-    log(`database pool error: ${describeDbError(err)}`);
+    log('error', 'db.pool.error', { error_class: describeDbError(err) });
   });
   return pool;
 }
@@ -52,6 +52,8 @@ function createPool(databaseUrl, options) {
  * Attempt to reach the database, retrying with bounded backoff.
  *   pool    - the connection pool
  *   options - { delaysMs, log }
+ *
+ * `log` is the structured-logger callback (level, event, fields).
  * Returns { connected, attempts }.
  */
 async function connectWithRetry(pool, options) {
@@ -63,7 +65,11 @@ async function connectWithRetry(pool, options) {
       await pool.query('SELECT 1');
       return { connected: true, attempts: i + 1 };
     } catch (err) {
-      log(`database connection attempt ${i + 1}/${delays.length} failed: ${describeDbError(err)}`);
+      log('warn', 'db.connect.attempt_failed', {
+        attempt: i + 1,
+        max: delays.length,
+        error_class: describeDbError(err),
+      });
       await sleep(delays[i]);
     }
   }

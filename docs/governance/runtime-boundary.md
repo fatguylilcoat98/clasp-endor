@@ -85,6 +85,52 @@ The runtime audit log (`governance_audit_log`) is for memory-governance
 events; runtime configuration events are operational logs only, never
 written to the audit log.
 
+### Structured-log contract
+
+All runtime logging flows through one logger module
+(`src/runtime/log.js`). Every entry is **one line of JSON** with the
+core fields below, plus any caller-supplied fields:
+
+| Field | Source | Notes |
+|---|---|---|
+| `ts` | `new Date().toISOString()` | core, reserved |
+| `level` | `info` / `warn` / `error` | core, reserved |
+| `event` | the stable, namespaced event name | core, reserved |
+| `pid` | `process.pid` | core, reserved |
+| `…fields` | caller-supplied | safe scalars only — see below |
+
+**Reserved fields** (`ts`, `level`, `event`, `pid`) cannot be overridden
+by caller-supplied fields; an attempt to override is silently dropped.
+
+**Allowed caller-supplied field kinds**:
+
+- a coarse `error_class` (the value of `err.code || err.name`);
+- a runtime `state` name;
+- an integer `port`;
+- counts (`attempt`, `max`, `attempts`);
+- a fixed reason string from a controlled set (e.g. the
+  `resolvePilotFrom` reasons).
+
+**Forbidden field kinds** (review-enforced, plus a positive no-leak
+unit test):
+
+- the database connection string or any URL containing credentials;
+- a password or any secret;
+- persona text, companion name, supported-person name, or any
+  `companion_profile` / `supported_person_profile` content;
+- a raw `err.message` (which can echo the connection string for pg
+  errors).
+
+The `src/db/client.js` log callback receives the same structured shape
+— `(level, event, fields)` — so events emitted from the database
+client are produced as full structured entries, not as strings to be
+re-parsed.
+
+The current event-name catalog lives alongside the call sites in
+`src/runtime/boot.js` and `src/db/client.js`. New events follow the
+same `<scope>.<thing>[.<detail>]` naming and must obey the field rules
+above.
+
 ## 6. Health output
 
 The `/healthz`, `/readyz`, and `/status` endpoints receive only the

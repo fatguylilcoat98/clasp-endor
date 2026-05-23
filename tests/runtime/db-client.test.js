@@ -61,16 +61,23 @@ test('describeDbError: reduces an error to a coarse, non-sensitive class', () =>
   assert.equal(describeDbError(null), 'unknown');
 });
 
-test("createPool: pool 'error' events are caught and logged with a coarse class", async () => {
+test("createPool: pool 'error' events emit a structured db.pool.error entry", async () => {
   const { createPool } = require('../../src/db/client');
-  const logs = [];
-  const pool = createPool('postgres://x:x@127.0.0.1:1/x', { log: (m) => logs.push(m) });
+  const entries = [];
+  const pool = createPool('postgres://x:x@127.0.0.1:1/x', {
+    log: (level, event, fields) => entries.push({ level, event, fields }),
+  });
   // Synthetic emit — a real transient backend error would surface the
   // same way. Without the handler, this would crash the process.
   pool.emit('error', Object.assign(new Error('synthetic'), { code: 'ECONNRESET' }));
   assert.ok(
-    logs.some((m) => m.includes('ECONNRESET') && m.toLowerCase().includes('pool error')),
-    `expected a pool-error log with the coarse class, got: ${logs.join(' | ')}`
+    entries.some(
+      (e) =>
+        e.level === 'error'
+        && e.event === 'db.pool.error'
+        && e.fields.error_class === 'ECONNRESET'
+    ),
+    `expected a structured db.pool.error entry, got: ${JSON.stringify(entries)}`
   );
   await pool.end();
 });

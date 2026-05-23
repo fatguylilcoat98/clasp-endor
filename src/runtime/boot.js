@@ -7,8 +7,9 @@
  * lands in a non-ready state. Configuration is restart-to-apply; the
  * only post-boot transition is ready <-> degraded.
  *
- * Logging is operational only. It never emits secrets, the connection
- * string, persona text, or any profile content.
+ * Logging is operational only, emitted through the structured
+ * JSON-line logger. It never carries secrets, the connection string,
+ * persona text, or any profile content.
  */
 
 const { parseEnv } = require('./env');
@@ -17,16 +18,13 @@ const { assessConfig } = require('./validation-hook');
 const { createPool, connectWithRetry, pingDatabase, closePool } = require('../db/client');
 const { loadRuntimeConfig } = require('./config-loader');
 const { createHealthServer } = require('./health');
+const logger = require('./log');
 
 const DEPENDENCY_CHECK_INTERVAL_MS = 15000;
 
-function log(message) {
-  console.log(`[boot] ${message}`);
-}
-
 // Reduce any error to a coarse, non-sensitive class for logging.
-// pg errors can echo the connection string in their message; we never
-// log the message.
+// pg errors can echo the connection string in their message; the raw
+// message is never logged.
 function coarseError(err) {
   if (!err) return 'unknown';
   return err.code || err.name || 'unknown';
@@ -61,27 +59,30 @@ async function boot(rawEnv, options) {
   const env = parseEnv(rawEnv);
 
   if (!env.ok) {
-    for (const e of env.errors) log(`environment error: ${e}`);
+    for (const e of env.errors) logger.warn('boot.env.error', { message: e });
     currentState = STATES.CONFIGURATION_INVALID;
   } else if (!env.flags.masterSwitch) {
-    log('Layer-1 master switch is off — runtime is inert');
+    logger.info('boot.inert');
     currentState = STATES.INERT;
   } else {
-    pool = createPool(env.databaseUrl, { log });
-    const conn = await connectWithRetry(pool, { delaysMs: opts.dbRetryDelaysMs, log });
+    pool = createPool(env.databaseUrl, { log: logger.emit });
+    const conn = await connectWithRetry(pool, {
+      delaysMs: opts.dbRetryDelaysMs,
+      log: logger.emit,
+    });
     if (!conn.connected) {
-      log('database unreachable after retries');
+      logger.error('boot.db.unreachable', { attempts: conn.attempts });
       currentState = STATES.CONFIGURATION_INVALID;
     } else {
       try {
         const loaded = await loadRuntimeConfig(pool, { envPilotId: env.pilotInstanceId });
         if (!loaded.ok) {
-          log(`pilot resolution failed: ${loaded.reason}`);
+          logger.error('boot.pilot.resolution_failed', { reason: loaded.reason });
           currentState = STATES.CONFIGURATION_INVALID;
         } else {
           const assessment = assessConfig(loaded.config);
           if (assessment.outcome === 'invalid') {
-            log('companion configuration is invalid');
+            logger.error('boot.config.invalid');
           }
           currentState = deriveBootState({
             masterSwitch: true,
@@ -90,13 +91,13 @@ async function boot(rawEnv, options) {
           });
         }
       } catch {
-        log('configuration load failed');
+        logger.error('boot.config.load_failed');
         currentState = STATES.CONFIGURATION_INVALID;
       }
     }
   }
 
-  log(`runtime state: ${currentState}`);
+  logger.info('boot.state', { state: currentState });
 
   // The health server starts in every state so the state is observable.
   const healthServer = createHealthServer({
@@ -105,7 +106,7 @@ async function boot(rawEnv, options) {
     bootTimeMs,
   });
   await listen(healthServer, env.port);
-  log(`health server listening on port ${env.port}`);
+  logger.info('boot.health.listening', { port: env.port });
 
   // Post-boot dependency monitor: ready <-> degraded only.
   if (pool && currentState === STATES.READY) {
@@ -114,10 +115,10 @@ async function boot(rawEnv, options) {
       const reachable = await pingDatabase(pool);
       if (!reachable && currentState === STATES.READY) {
         currentState = applyEvent(currentState, 'dependency-lost');
-        log(`runtime state: ${currentState}`);
+        logger.warn('runtime.dependency.lost', { state: currentState });
       } else if (reachable && currentState === STATES.DEGRADED) {
         currentState = applyEvent(currentState, 'dependency-restored');
-        log(`runtime state: ${currentState}`);
+        logger.info('runtime.dependency.restored', { state: currentState });
       }
     }, intervalMs);
     if (monitor.unref) monitor.unref();
@@ -153,11 +154,11 @@ if (require.main === module) {
   // the raw message, which could echo secrets — and the process exits
   // non-zero so the orchestrator can restart it.
   process.on('uncaughtException', (err) => {
-    console.log(`[boot] uncaughtException: ${coarseError(err)}`);
+    logger.error('process.uncaught_exception', { error_class: coarseError(err) });
     process.exit(1);
   });
   process.on('unhandledRejection', (err) => {
-    console.log(`[boot] unhandledRejection: ${coarseError(err)}`);
+    logger.error('process.unhandled_rejection', { error_class: coarseError(err) });
     process.exit(1);
   });
 
@@ -169,7 +170,7 @@ if (require.main === module) {
         handle
           .shutdown()
           .catch((err) => {
-            console.log(`[boot] shutdown error: ${coarseError(err)}`);
+            logger.error('boot.shutdown.error', { error_class: coarseError(err) });
           })
           .finally(() => process.exit(0));
       };
@@ -177,7 +178,7 @@ if (require.main === module) {
       process.on('SIGINT', stop);
     })
     .catch((err) => {
-      console.log(`[boot] fatal: ${coarseError(err)}`);
+      logger.error('boot.fatal', { error_class: coarseError(err) });
       process.exit(1);
     });
 }
