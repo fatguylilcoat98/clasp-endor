@@ -94,6 +94,7 @@ return JSON with `Content-Type: application/json` and a 10 second
   "state": "ready",
   "ready": true,
   "uptimeSeconds": 142,
+  "version": "0.0.0",
   "flags": {
     "masterSwitch": true,
     "rlsEnforced": false,
@@ -111,6 +112,8 @@ return JSON with `Content-Type: application/json` and a 10 second
 - `state` — one of the five runtime states.
 - `ready` — boolean.
 - `uptimeSeconds` — integer since boot.
+- `version` — the build version (env `LYLO_VERSION` if set, else
+  `package.json#version`); a non-secret string for operator visibility.
 - `flags` — the feature-flag booleans only.
 
 It **must never** include:
@@ -179,6 +182,8 @@ connection string.
 | `boot.config.load_failed` | error | — | A DB query threw during config load. | Check Postgres health and the schema migrations. |
 | `boot.state` | info | `state` | The boot-time runtime state. | None if `ready`; otherwise see the state-specific row in section 2. |
 | `boot.health.listening` | info | `port` | Health server bound and listening. | None. |
+| `boot.shutdown.started` | info | — | Shutdown has begun (signal received, or in-process call). | None; expect `boot.shutdown.complete` shortly. |
+| `boot.shutdown.complete` | info | `durationMs` | Shutdown finished cleanly; process is about to exit 0. | None. If absent after `started`, investigate process state. |
 | `runtime.dependency.lost` | warn | `state` (= `degraded`) | The post-boot DB ping failed; transitioned to `degraded`. | None for a one-off — it auto-recovers. Alert if persistent. |
 | `runtime.dependency.restored` | info | `state` (= `ready`) | DB ping succeeded; back to `ready`. | None. |
 | `boot.shutdown.error` | error | `error_class` | Shutdown rejected; the process still exits via `finally`. | Confirm the orchestrator received a clean exit; capture preceding events. |
@@ -233,10 +238,30 @@ Optional:
   `configuration-invalid`.
 - `PILOT_INSTANCE_ID` — when set, must match the single
   `pilot_instances` row; mismatch yields `configuration-invalid`.
+- `LYLO_VERSION` — build version override surfaced in `/status`. When
+  unset, the runtime uses `package.json#version`.
 - `RLS_ENFORCED` — Layer-2; independent of Layer-1; default `false`.
 - `SETUP_MODE_ENABLED`, `VOICE_ENABLED`,
   `LEGACY_PROJECT_MODE_ENABLED` — Layer-3 capability sub-flags;
   defaults `false`.
+
+### Provision the instance (first-time setup)
+
+A fresh instance database needs the four configuration rows seeded
+before the runtime can reach `ready`. Fill an answers file (start from
+`config/answers.example.json`) and run the offline provisioning
+script:
+
+```sh
+DATABASE_URL='postgres://USER:PASSWORD@HOST:5432/DB' \
+node scripts/setup/provision-instance.js --answers ./answers.json
+```
+
+The script validates the answers, seeds atomically, and records a
+paper-trail in `setup_state`. Run **while the runtime is not mounted**
+against the same database. See
+`../setup/provisioning-contract.md` for the contract, idempotency
+rules, and event catalog.
 
 ### Run
 

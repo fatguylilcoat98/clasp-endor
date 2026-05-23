@@ -74,3 +74,12 @@ test('parseEnv: an out-of-range PORT is an error', () => {
   assert.equal(parseEnv({ DATABASE_URL: 'x', PORT: '0' }).ok, false);
   assert.equal(parseEnv({ DATABASE_URL: 'x', PORT: '70000' }).ok, false);
 });
+
+test('parseEnv: LYLO_VERSION is read as an optional string and trimmed', () => {
+  assert.equal(parseEnv({ DATABASE_URL: 'x' }).version, null);
+  assert.equal(parseEnv({ DATABASE_URL: 'x', LYLO_VERSION: 'v1.2.3' }).version, 'v1.2.3');
+  assert.equal(
+    parseEnv({ DATABASE_URL: 'x', LYLO_VERSION: '  v1.2.3  ' }).version,
+    'v1.2.3'
+  );
+});

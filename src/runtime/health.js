@@ -34,6 +34,7 @@ function buildHealthResponse(pathname, ctx) {
         state: ctx.state,
         ready,
         uptimeSeconds: Math.max(0, Math.floor((ctx.nowMs - ctx.bootTimeMs) / 1000)),
+        version: ctx.version,
         flags: ctx.flags,
       },
     };
@@ -43,14 +44,16 @@ function buildHealthResponse(pathname, ctx) {
 
 /*
  * Create the health server.
- *   options - { getState, flags, bootTimeMs }
+ *   options - { getState, flags, bootTimeMs, version }
  * getState is a callback so the server always reports the current
  * runtime state, which may move between ready and degraded.
+ * version appears in /status only — never in /healthz or /readyz.
  */
 function createHealthServer(options) {
   const getState = options.getState;
   const flags = options.flags || {};
   const bootTimeMs = options.bootTimeMs || Date.now();
+  const version = options.version || 'unknown';
 
   const server = http.createServer((req, res) => {
     let pathname = '/';
@@ -64,6 +67,7 @@ function createHealthServer(options) {
       flags,
       bootTimeMs,
       nowMs: Date.now(),
+      version,
     });
     res.writeHead(statusCode, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(body));

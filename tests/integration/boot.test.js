@@ -205,6 +205,14 @@ test('ready: valid companion_profile and supported person', async () => {
     assert.equal(probe.body.includes('warm'), false, 'must not expose persona text');
     assert.equal(probe.body.includes('Supported Person'), false, 'must not expose profile data');
   }
+
+  // /status carries a non-empty version string (operational visibility).
+  const statusBody = JSON.parse(r.status.body);
+  assert.equal(typeof statusBody.version, 'string', 'version must be a string');
+  assert.ok(statusBody.version.length > 0, 'version must be non-empty');
+  // version appears in /status only — never in /healthz or /readyz.
+  assert.equal(r.healthz.body.includes('version'), false);
+  assert.equal(r.readyz.body.includes('version'), false);
 });
 
 test('configuration-invalid: malformed companion_profile', async () => {
@@ -251,7 +259,7 @@ test('configuration-invalid: database unreachable', async () => {
   }
 });
 
-test('shutdown: idempotent and force-closes held keep-alive sockets', async () => {
+test('shutdown: idempotent, force-closes sockets, and emits start/complete events', async () => {
   await withDb(async (c) => {
     await reset(c);
     const pid = await seedPilot(c);
@@ -259,32 +267,67 @@ test('shutdown: idempotent and force-closes held keep-alive sockets', async () =
     await seedCompanionProfile(c, pid, filledCompanion);
     await seedSupportedPerson(c, pid, uid);
   });
-  const handle = await boot(
-    { DATABASE_URL, PORT: String(TEST_PORT), LYLO_SHELL_MODE: 'true' },
-    { dbRetryDelaysMs: FAST_DELAYS }
+
+  // Capture stdout so we can verify the shutdown events were emitted.
+  const captured = [];
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (chunk) => {
+    captured.push(String(chunk));
+    return true;
+  };
+
+  let agent;
+  try {
+    const handle = await boot(
+      { DATABASE_URL, PORT: String(TEST_PORT), LYLO_SHELL_MODE: 'true' },
+      { dbRetryDelaysMs: FAST_DELAYS }
+    );
+    assert.equal(handle.getState(), 'ready');
+
+    // Open a keep-alive connection that we deliberately do not release.
+    // Without closeAllConnections, the held socket would force shutdown
+    // to wait up to keepAliveTimeout.
+    agent = new http.Agent({ keepAlive: true });
+    await new Promise((resolve, reject) => {
+      http
+        .get({ host: '127.0.0.1', port: TEST_PORT, path: '/healthz', agent }, (res) => {
+          res.on('data', () => {});
+          res.on('end', resolve);
+        })
+        .on('error', reject);
+    });
+
+    const start = Date.now();
+    const p1 = handle.shutdown();
+    const p2 = handle.shutdown();
+    assert.equal(p1, p2, 'shutdown() must return the same promise on re-entry');
+    await Promise.all([p1, p2]);
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 2000, `shutdown should complete promptly, took ${elapsed}ms`);
+  } finally {
+    process.stdout.write = originalWrite;
+    if (agent) agent.destroy();
+  }
+
+  // Parse the captured JSON-line logs and assert the new shutdown events.
+  const entries = captured
+    .join('')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  assert.ok(
+    entries.some((e) => e.event === 'boot.shutdown.started'),
+    'boot.shutdown.started must be emitted'
   );
-  assert.equal(handle.getState(), 'ready');
-
-  // Open a keep-alive connection that we deliberately do not release.
-  // Without closeAllConnections, the held socket would force shutdown
-  // to wait up to keepAliveTimeout.
-  const agent = new http.Agent({ keepAlive: true });
-  await new Promise((resolve, reject) => {
-    http
-      .get({ host: '127.0.0.1', port: TEST_PORT, path: '/healthz', agent }, (res) => {
-        res.on('data', () => {});
-        res.on('end', resolve);
-      })
-      .on('error', reject);
-  });
-
-  const start = Date.now();
-  const p1 = handle.shutdown();
-  const p2 = handle.shutdown();
-  assert.equal(p1, p2, 'shutdown() must return the same promise on re-entry');
-  await Promise.all([p1, p2]);
-  const elapsed = Date.now() - start;
-  assert.ok(elapsed < 2000, `shutdown should complete promptly, took ${elapsed}ms`);
-
-  agent.destroy();
+  const complete = entries.find((e) => e.event === 'boot.shutdown.complete');
+  assert.ok(complete, 'boot.shutdown.complete must be emitted');
+  assert.equal(typeof complete.durationMs, 'number');
+  assert.ok(complete.durationMs >= 0);
 });

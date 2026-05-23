@@ -22,6 +22,11 @@ const logger = require('./log');
 
 const DEPENDENCY_CHECK_INTERVAL_MS = 15000;
 
+// Build version: env LYLO_VERSION wins if set, otherwise the package
+// manifest. Surfaces in /status only — never logged with persona,
+// profile, or secret content.
+const PACKAGE_VERSION = require('../../package.json').version;
+
 // Reduce any error to a coarse, non-sensitive class for logging.
 // pg errors can echo the connection string in their message; the raw
 // message is never logged.
@@ -100,10 +105,12 @@ async function boot(rawEnv, options) {
   logger.info('boot.state', { state: currentState });
 
   // The health server starts in every state so the state is observable.
+  const version = env.version || PACKAGE_VERSION;
   const healthServer = createHealthServer({
     getState: () => currentState,
     flags: env.flags,
     bootTimeMs,
+    version,
   });
   await listen(healthServer, env.port);
   logger.info('boot.health.listening', { port: env.port });
@@ -132,6 +139,8 @@ async function boot(rawEnv, options) {
   let shuttingDown = null;
   function shutdown() {
     if (shuttingDown) return shuttingDown;
+    const shutdownStartMs = Date.now();
+    logger.info('boot.shutdown.started');
     shuttingDown = (async () => {
       if (monitor) clearInterval(monitor);
       const closed = new Promise((resolve) => healthServer.close(resolve));
@@ -142,6 +151,9 @@ async function boot(rawEnv, options) {
       }
       await closed;
       if (pool) await closePool(pool);
+      logger.info('boot.shutdown.complete', {
+        durationMs: Date.now() - shutdownStartMs,
+      });
     })();
     return shuttingDown;
   }

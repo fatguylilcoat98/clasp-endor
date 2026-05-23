@@ -10,6 +10,7 @@ const baseCtx = {
   flags: { masterSwitch: true, voiceEnabled: false },
   bootTimeMs: 1000,
   nowMs: 6000,
+  version: '1.2.3',
 };
 
 test('buildHealthResponse: /healthz is 200 live in every state', () => {
@@ -38,13 +39,23 @@ test('buildHealthResponse: /readyz is 200 only when ready', () => {
   }
 });
 
-test('buildHealthResponse: /status reports state, readiness, uptime, flags', () => {
+test('buildHealthResponse: /status reports state, readiness, uptime, version, flags', () => {
   const r = buildHealthResponse('/status', baseCtx);
   assert.equal(r.statusCode, 200);
   assert.equal(r.body.state, STATES.READY);
   assert.equal(r.body.ready, true);
   assert.equal(r.body.uptimeSeconds, 5);
+  assert.equal(r.body.version, '1.2.3');
   assert.deepEqual(r.body.flags, { masterSwitch: true, voiceEnabled: false });
+});
+
+test('buildHealthResponse: version appears only in /status, never in /healthz or /readyz', () => {
+  const status = buildHealthResponse('/status', baseCtx).body;
+  assert.equal(status.version, '1.2.3');
+  const healthz = buildHealthResponse('/healthz', baseCtx).body;
+  assert.equal(healthz.version, undefined);
+  const readyz = buildHealthResponse('/readyz', baseCtx).body;
+  assert.equal(readyz.version, undefined);
 });
 
 test('buildHealthResponse: an unknown path is 404', () => {

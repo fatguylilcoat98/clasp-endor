@@ -36,10 +36,14 @@ Documentation for the Lylo Companion golden master template.
 - `deployment/operator-runbook.md` — operator runbook for the runtime
   shell: boot states, health/readiness behavior, structured log
   events, shutdown, local run commands, and failure-mode triage.
+- `deployment/release-candidate.md` — the deployment-ready runtime-
+  shell declaration: rehearsal evidence, scope, and explicit deferred
+  items.
 - `deployment/` — Render and Supabase readiness, environment variables,
   and the instance deployment guide. Populated by a later GM-series PR.
 
 ## Status
 
-GM-12. The Render / Supabase portions of the `deployment/` section are
-still placeholders until a later GM PR populates them.
+GM-13. The runtime shell is declared a deployment-ready release
+candidate; the Render / Supabase portions of the `deployment/` section
+are still placeholders until a later GM PR populates them.

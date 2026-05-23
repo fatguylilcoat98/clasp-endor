@@ -87,6 +87,10 @@ function parseEnv(rawEnv) {
     ? String(env.PILOT_INSTANCE_ID).trim()
     : null;
 
+  // Optional build version override. When absent, boot falls back to
+  // package.json#version.
+  const version = env.LYLO_VERSION ? String(env.LYLO_VERSION).trim() : null;
+
   // Health/readiness server port. An unparseable PORT is an error,
   // which the boot sequence treats as configuration-invalid.
   const { value: port, error: portError } = parsePort(env.PORT);
@@ -99,6 +103,7 @@ function parseEnv(rawEnv) {
     databaseUrl,
     pilotInstanceId,
     port,
+    version,
   };
 }
 
