@@ -65,6 +65,13 @@ const INTENT_TYPES = Object.freeze({
   // effect capability anywhere in the codebase, and the default-deny
   // rule keeps it that way.
   EXTERNAL_SIDE_EFFECT: 'external.side_effect',
+
+  // GM-24: recording a human admin's review outcome against a
+  // pending review_queue item. Classifier returns `admissible` —
+  // role enforcement (admin only) lives at the review-decision
+  // actor (src/actors/review-decision-actor.js), not here. The
+  // classifier is stateless and has no session context.
+  GOVERNANCE_REVIEW_DECIDE: 'governance.review.decide',
 });
 
 const ALL_INTENT_TYPES = new Set(Object.values(INTENT_TYPES));

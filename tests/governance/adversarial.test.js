@@ -266,13 +266,17 @@ test('C1. EVENT_TYPES snapshot: the GM-18-locked memory-audit vocabulary is unch
   // they don't go through governance_audit_log.
 });
 
-test('C2. REASONS snapshot: the GM-21-locked governance REASONS vocabulary is unchanged by GM-22.', () => {
+test('C2. REASONS snapshot: GM-21 vocabulary + the GM-24 addition (review_decision_recording_permitted).', () => {
+  // GM-24 added exactly one REASON. If a future PR widens the
+  // vocabulary, this snapshot diff catches it and forces a paired
+  // review of the governance + actor + adversarial-test docs.
   const SNAPSHOT = [
     'ai_inferred_requires_review',
     'external_side_effects_not_authorized',
     'malformed_intent_payload',
     'response_delivery_permitted',
     'retraction_infrastructure_not_available',
+    'review_decision_recording_permitted',
     'supersession_infrastructure_not_available',
     'unknown_intent_type',
     'user_stated_requires_review',
@@ -285,9 +289,12 @@ test('C2. REASONS snapshot: the GM-21-locked governance REASONS vocabulary is un
     'governance REASONS snapshot drifted — adding reasons requires paired updates to docs/governance/');
 });
 
-test('C3. INTENT_TYPES snapshot: the GM-21-locked taxonomy is unchanged by GM-22.', () => {
+test('C3. INTENT_TYPES snapshot: GM-21 taxonomy + the GM-24 addition (governance.review.decide).', () => {
+  // GM-24 added exactly one intent type. If a future PR widens
+  // the taxonomy, this snapshot diff catches it.
   const SNAPSHOT = [
     'external.side_effect',
+    'governance.review.decide',
     'memory.candidate.create',
     'memory.retract',
     'memory.supersede',
@@ -299,6 +306,16 @@ test('C3. INTENT_TYPES snapshot: the GM-21-locked taxonomy is unchanged by GM-22
   const current = Object.values(INTENT_TYPES).sort();
   assert.deepEqual(current, SNAPSHOT.sort(),
     'INTENT_TYPES snapshot drifted — adding intent types requires paired updates to docs/governance/');
+});
+
+test('C4. OUTCOMES snapshot: GM-22/23 + the GM-24 addition (recorded).', () => {
+  // GM-24 added exactly one actor outcome. The five-way set is
+  // locked here; any future widening must update this snapshot
+  // alongside docs/governance/actor-runtime-boundary.md.
+  const SNAPSHOT = ['abstained', 'executed', 'recorded', 'rejected', 'staged'];
+  const current = Object.values(OUTCOMES).sort();
+  assert.deepEqual(current, SNAPSHOT.sort(),
+    'actor OUTCOMES snapshot drifted — adding outcomes requires paired updates to actor-runtime-boundary.md');
 });
 
 // ===================================================================
@@ -512,4 +529,211 @@ test('E10. EVENT_TYPES snapshot still passes — GM-23 added NO new audit event 
   const current = Object.values(memoryAudit.EVENT_TYPES).sort();
   assert.deepEqual(current, SNAPSHOT.sort(),
     'GM-23 must not widen memory EVENT_TYPES — the queue table IS the artifact');
+});
+
+// ===================================================================
+// F. GM-24 review-decision actor adversarial probes
+// ===================================================================
+
+const { createReviewDecisionActor } = require('../../src/actors');
+
+const ADMIN = 'aaaaaaaa-4444-1111-1111-aaaaaaaaaaaa';
+const QUEUE_ID = 'eeeeeeee-1111-2222-3333-eeeeeeeeeeee';
+
+function makeMockReviewDecisionPool() {
+  const queries = [];
+  let connectCalls = 0;
+  const client = {
+    queries,
+    async query(text) {
+      queries.push(text);
+      if (/RETURNING/i.test(text)) {
+        return { rows: [{ id: 'dddddddd-2222-2222-2222-dddddddddddd', reviewed_at: new Date() }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => {},
+  };
+  return {
+    getQueries: () => queries,
+    getConnectCalls: () => connectCalls,
+    connect: async () => { connectCalls += 1; return client; },
+  };
+}
+
+function baseReviewDecisionParams() {
+  return {
+    pilotInstanceId: PILOT,
+    userId: ADMIN,
+    userRole: 'admin',
+    reviewQueueId: QUEUE_ID,
+    reviewOutcome: 'approved',
+    reviewReason: 'approved_admin_review',
+  };
+}
+
+test('F1. Plain-object Decision to review-decision actor → throws (instanceof fails); pool not consulted.', async () => {
+  const pool = makeMockReviewDecisionPool();
+  const actor = createReviewDecisionActor({ reviewQueuePool: pool });
+  const fake = {
+    intentType: INTENT_TYPES.GOVERNANCE_REVIEW_DECIDE,
+    decision: DECISION_OUTCOMES.ADMISSIBLE,
+    reason: REASONS.REVIEW_DECISION_RECORDING_PERMITTED,
+    policyRef: 'review-decision-runtime-boundary.md §3',
+  };
+  await assert.rejects(() => actor.execute(fake, baseReviewDecisionParams()), /must be a Decision instance/);
+  assert.equal(pool.getConnectCalls(), 0);
+});
+
+test('F2. Prototype-tampered Decision passes instanceof but isValidDecision rejects → throws.', async () => {
+  const pool = makeMockReviewDecisionPool();
+  const actor = createReviewDecisionActor({ reviewQueuePool: pool });
+  const fake = {
+    intentType: INTENT_TYPES.GOVERNANCE_REVIEW_DECIDE,
+    decision: DECISION_OUTCOMES.ADMISSIBLE,
+    reason: REASONS.REVIEW_DECISION_RECORDING_PERMITTED,
+    policyRef: 'review-decision-runtime-boundary.md §3',
+  };
+  Object.setPrototypeOf(fake, Decision.prototype);
+  Object.freeze(fake);
+  assert.ok(fake instanceof Decision, 'prototype tampering bypasses instanceof');
+  await assert.rejects(() => actor.execute(fake, baseReviewDecisionParams()), /prototype tampering or forgery/);
+  assert.equal(pool.getConnectCalls(), 0);
+});
+
+test('F3. Real Decision with wrong intent type (response.deliver) → throws (layer-4).', async () => {
+  const pool = makeMockReviewDecisionPool();
+  const actor = createReviewDecisionActor({ reviewQueuePool: pool });
+  const wrong = classifyExecutionIntent({ type: INTENT_TYPES.RESPONSE_DELIVER });
+  await assert.rejects(
+    () => actor.execute(wrong, baseReviewDecisionParams()),
+    /decision\.intentType must be "governance\.review\.decide"/
+  );
+  assert.equal(pool.getConnectCalls(), 0);
+});
+
+test('F4. Real Decision with requires_review outcome (memory.candidate.create AI_INFERRED) → throws (wrong intent type first; then outcome layer if intent matched).', async () => {
+  const pool = makeMockReviewDecisionPool();
+  const actor = createReviewDecisionActor({ reviewQueuePool: pool });
+  const requires = classifyExecutionIntent({
+    type: INTENT_TYPES.MEMORY_CANDIDATE_CREATE,
+    payload: { provenance: 'AI_INFERRED' },
+  });
+  await assert.rejects(() => actor.execute(requires, baseReviewDecisionParams()), /intentType/);
+  assert.equal(pool.getConnectCalls(), 0);
+});
+
+test('F5. Non-admin userRole (senior, family, caregiver, system) → throws BEFORE pool.connect.', async () => {
+  const pool = makeMockReviewDecisionPool();
+  const actor = createReviewDecisionActor({ reviewQueuePool: pool });
+  const decision = classifyExecutionIntent({ type: INTENT_TYPES.GOVERNANCE_REVIEW_DECIDE });
+  for (const role of ['senior', 'family', 'caregiver', 'system']) {
+    await assert.rejects(
+      () => actor.execute(decision, { ...baseReviewDecisionParams(), userRole: role }),
+      /userRole must be "admin"/,
+      `non-admin role ${role} should be rejected`
+    );
+  }
+  assert.equal(pool.getConnectCalls(), 0, 'pool must not be consulted on any non-admin attempt');
+});
+
+test('F6. reviewOutcome outside locked vocabulary (e.g. "pending", "maybe") → throws.', async () => {
+  const pool = makeMockReviewDecisionPool();
+  const actor = createReviewDecisionActor({ reviewQueuePool: pool });
+  const decision = classifyExecutionIntent({ type: INTENT_TYPES.GOVERNANCE_REVIEW_DECIDE });
+  for (const bad of ['pending', 'maybe', 'unknown', '', 'APPROVED']) {
+    await assert.rejects(
+      () => actor.execute(decision, { ...baseReviewDecisionParams(), reviewOutcome: bad }),
+      /reviewOutcome must be one of/
+    );
+  }
+});
+
+test('F7. reviewReason outside locked vocabulary → throws.', async () => {
+  const pool = makeMockReviewDecisionPool();
+  const actor = createReviewDecisionActor({ reviewQueuePool: pool });
+  const decision = classifyExecutionIntent({ type: INTENT_TYPES.GOVERNANCE_REVIEW_DECIDE });
+  for (const bad of ['because', 'rejected_for_fun', '', 'APPROVED_ADMIN_REVIEW']) {
+    await assert.rejects(
+      () => actor.execute(decision, { ...baseReviewDecisionParams(), reviewReason: bad }),
+      /reviewReason must be one of/
+    );
+  }
+});
+
+test('F8. reviewQueueId / pilotInstanceId / userId non-UUID → throws BEFORE pool.connect.', async () => {
+  const pool = makeMockReviewDecisionPool();
+  const actor = createReviewDecisionActor({ reviewQueuePool: pool });
+  const decision = classifyExecutionIntent({ type: INTENT_TYPES.GOVERNANCE_REVIEW_DECIDE });
+  await assert.rejects(
+    () => actor.execute(decision, { ...baseReviewDecisionParams(), reviewQueueId: 'not-uuid' }),
+    /reviewQueueId must be a UUID/
+  );
+  await assert.rejects(
+    () => actor.execute(decision, { ...baseReviewDecisionParams(), pilotInstanceId: 'x' }),
+    /pilotInstanceId must be a UUID/
+  );
+  await assert.rejects(
+    () => actor.execute(decision, { ...baseReviewDecisionParams(), userId: 'y' }),
+    /userId must be a UUID/
+  );
+  assert.equal(pool.getConnectCalls(), 0);
+});
+
+test('F9. Reviewer impersonation by input: passing reviewerUserId in params is silently ignored — actor sources from userId only.', async () => {
+  const pool = makeMockReviewDecisionPool();
+  const actor = createReviewDecisionActor({ reviewQueuePool: pool });
+  const decision = classifyExecutionIntent({ type: INTENT_TYPES.GOVERNANCE_REVIEW_DECIDE });
+  await actor.execute(
+    decision,
+    Object.assign(baseReviewDecisionParams(), { reviewerUserId: '99999999-9999-9999-9999-999999999999' })
+  );
+  // The INSERT happened — verify the actor used the session userId,
+  // not the spoofed input field. We can't see the SQL params from
+  // here (mock client.query took only the query text), but the
+  // absence of any error path tied to the spoof is the proof. The
+  // repository-layer test (test 'recordReviewDecision: INSERT shape
+  // sources reviewer_user_id from session context') asserts the
+  // parameter binding directly.
+  assert.equal(pool.getConnectCalls(), 1);
+});
+
+test('F10. Sentinel content in unknown params field never appears in captured logs.', async () => {
+  const SENTINEL = 'F10_SECRET_AAA';
+  const pool = makeMockReviewDecisionPool();
+  const captured = [];
+  const log = {
+    info(event, fields) {
+      captured.push(JSON.stringify({ ts: 'X', level: 'info', event, pid: 0, ...(fields || {}) }));
+    },
+  };
+  const actor = createReviewDecisionActor({ reviewQueuePool: pool, log });
+  const decision = classifyExecutionIntent({ type: INTENT_TYPES.GOVERNANCE_REVIEW_DECIDE });
+  await actor.execute(
+    decision,
+    Object.assign(baseReviewDecisionParams(), { reviewerNotes: SENTINEL, payload: SENTINEL })
+  );
+  const text = captured.join('\n');
+  assert.equal(text.includes(SENTINEL), false, 'unknown-field sentinel must not appear in logs');
+  assert.ok(text.includes('actor.review_decision.recorded'), 'metadata event must be emitted');
+});
+
+test('F11. EVENT_TYPES snapshot still locked — GM-24 added NO new audit event types.', () => {
+  // The governance_review_decisions table IS the artifact (per OQ-24.9).
+  const SNAPSHOT = ['memory.created', 'memory.list'];
+  const current = Object.values(memoryAudit.EVENT_TYPES).sort();
+  assert.deepEqual(current, SNAPSHOT.sort(),
+    'GM-24 must not widen memory EVENT_TYPES — the review-decisions table IS the artifact');
+});
+
+test('F12. Sole production path to a review_decide Decision the actor accepts is classifyExecutionIntent.', async () => {
+  const pool = makeMockReviewDecisionPool();
+  const actor = createReviewDecisionActor({ reviewQueuePool: pool });
+  // Real classifier path: works.
+  const real = classifyExecutionIntent({ type: INTENT_TYPES.GOVERNANCE_REVIEW_DECIDE });
+  const result = await actor.execute(real, baseReviewDecisionParams());
+  assert.equal(result.outcome, OUTCOMES.RECORDED);
+  // The actor reached the pool exactly once on the only valid path
+  // exercised in this test.
+  assert.equal(pool.getConnectCalls(), 1);
 });

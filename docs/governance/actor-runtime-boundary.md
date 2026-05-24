@@ -79,13 +79,14 @@ and may extend the boundary guard's allowed-import list (e.g. to
 permit `../memory` entry imports). Every such extension is a
 deliberate boundary change.
 
-## 2. Public API surface (GM-22 + GM-23)
+## 2. Public API surface (GM-22 + GM-23 + GM-24)
 
 | Export | Purpose |
 |---|---|
 | `createResponseDeliveryActor({conversationRuntime, log?})` | GM-22. Factory. Returns a frozen actor with exactly one method, `execute(decision, params)`. The caller injects an already-constructed conversation runtime (so the actor is testable with a mocked runtime — no model dependency in unit tests). |
 | `createReviewQueueActor({reviewQueuePool, log?})` | GM-23. Factory. Returns a frozen actor with exactly one method, `execute(decision, params)`. Stages `requires_review` Decisions into `governance_review_queue` via the GM-23 review-queue substrate. |
-| `OUTCOMES` | Frozen `{EXECUTED: 'executed', ABSTAINED: 'abstained', REJECTED: 'rejected', STAGED: 'staged'}` enum. `STAGED` is the GM-23 addition; the four-way set is snapshot-locked in the GM-22 adversarial suite. |
+| `createReviewDecisionActor({reviewQueuePool, log?})` | GM-24. Factory. Returns a frozen actor with exactly one method, `execute(decision, params)`. Records a human admin's review outcome (`approved` \| `rejected`) against a pending queue item, into `governance_review_decisions`. **Admin role only.** Recording is NOT execution; approval is NOT authorization. |
+| `OUTCOMES` | Frozen `{EXECUTED, ABSTAINED, REJECTED, STAGED, RECORDED}` enum. `RECORDED` is the GM-24 addition; the five-way set is snapshot-locked in the adversarial suite (C4). |
 
 Internal helpers (`verifyDecisionOrThrow`, `validateParams`,
 `isConversationRuntime`, `isReviewQueuePool`) are NOT re-exported
@@ -169,6 +170,44 @@ defense-in-depth for upstream callers; the database refuses
 forged inserts even if the actor were bypassed entirely. See
 `review-queue-runtime-boundary.md` for the full substrate
 contract.
+
+### 4b. The review-decision actor (GM-24) — seventh verification layer
+
+The review-decision actor extends the chain with an actor-
+specific **seventh** layer and a different layer-4 lock:
+
+| # | Check | Catches |
+|---|---|---|
+| 4 | `decision.intentType === INTENT_TYPES.GOVERNANCE_REVIEW_DECIDE` | Wrong intent type (response.deliver / memory.* / vault.* / external.* / governance.review.decide is the only admit) |
+| 6 | `decision.decision === DECISION_OUTCOMES.ADMISSIBLE` | Outcome confusion — the classifier always returns admissible for this intent type; this is defense in depth |
+| 7 | `params.userRole === 'admin'` | Non-admin recording a review outcome. Rejected BEFORE any DB call. The actor is the early-failure gate; RLS WITH CHECK is the authoritative wall. |
+
+Plus parameter validation: `reviewQueueId` UUID-shaped;
+`reviewOutcome ∈ ('approved','rejected')`; `reviewReason ∈`
+the locked 5-value vocabulary. Vocabulary CHECKs at the DB layer
+are the authoritative wall.
+
+Outcome routing:
+
+| Conditions | Action | Outcome shape |
+|---|---|---|
+| All seven verification layers + param validation pass | One INSERT into `governance_review_decisions` via `withReviewContext` | `{outcome: 'recorded', decision, reviewDecisionId, reviewedAt}` |
+| Any failure | THROW (before any DB call) | — |
+
+The substrate is defended four ways at the DB layer (RLS
+WITH CHECK on admin + tenant + no-impersonation; composite FKs;
+BEFORE-INSERT self-review trigger; UNIQUE on `review_queue_id`).
+The actor's role/vocabulary checks are early-failure
+defense-in-depth; the trigger and constraints are
+unbypassable. See `review-decision-runtime-boundary.md` for the
+full substrate contract.
+
+**The constitutional rule (added in GM-24):** *approval is not
+authorization; authorization is not execution.* The
+`OUTCOMES.RECORDED` value names the act of recording a review
+outcome — it is not a signal to act, and no production code in
+GM-24 consumes recorded review decisions for any operational
+purpose.
 
 ## 5. The conversation runtime is unchanged
 

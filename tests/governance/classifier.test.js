@@ -312,20 +312,24 @@ test('integrity: every Decision the classifier returns has a REASONS-vocabulary 
 
 // ---- admissibility-before-execution: only one intent type is admissible by default ----
 
-test('admissibility-before-execution: only response.deliver is admissible by default; everything else is requires_review or inadmissible', () => {
-  let admissibleCount = 0;
+test('admissibility-before-execution: only response.deliver and governance.review.decide are admissible by default; everything else is requires_review or inadmissible', () => {
+  const admissibleTypes = [];
   for (const type of Object.values(INTENT_TYPES)) {
     const intent =
       type === INTENT_TYPES.MEMORY_CANDIDATE_CREATE
         ? { type, payload: { provenance: 'AI_INFERRED' } }
         : { type };
     const d = classifyExecutionIntent(intent);
-    if (d.decision === DECISION_OUTCOMES.ADMISSIBLE) admissibleCount += 1;
+    if (d.decision === DECISION_OUTCOMES.ADMISSIBLE) admissibleTypes.push(type);
   }
-  assert.equal(
-    admissibleCount,
-    1,
-    'exactly one intent type (response.deliver) should be admissible by default in GM-21'
+  // GM-21 baseline: response.deliver only.
+  // GM-24 addition: governance.review.decide (the actor enforces
+  // admin-only role; the classifier is stateless and admits the
+  // intent type unconditionally).
+  assert.deepEqual(
+    admissibleTypes.sort(),
+    ['governance.review.decide', 'response.deliver'],
+    'exactly two intent types should be admissible by default after GM-24'
   );
 });
 

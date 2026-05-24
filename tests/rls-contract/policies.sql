@@ -55,10 +55,11 @@ GRANT SELECT ON pilot_instances, companion_profile, supported_person_profile, se
 
 GRANT SELECT ON pilot_instances, users, companion_profile, supported_person_profile,
                 circle_contacts, memory_vaults, memory_vault_sessions, memory_store,
-                governance_audit_log, governance_review_queue
+                governance_audit_log, governance_review_queue,
+                governance_review_decisions
   TO lylo_app;
 GRANT INSERT ON memory_store, governance_audit_log, memory_vault_sessions,
-                governance_review_queue
+                governance_review_queue, governance_review_decisions
   TO lylo_app;
 GRANT UPDATE (revoked_at) ON memory_vault_sessions TO lylo_app;
 
@@ -68,7 +69,8 @@ GRANT INSERT, SELECT ON pilot_instances, users, companion_profile,
 
 GRANT SELECT ON pilot_instances, users, companion_profile, supported_person_profile,
                 circle_contacts, memory_vaults, memory_vault_sessions,
-                governance_audit_log, setup_state, governance_review_queue
+                governance_audit_log, setup_state, governance_review_queue,
+                governance_review_decisions
   TO lylo_admin;
 
 -- ---------------------------------------------------------------------
@@ -87,6 +89,7 @@ ALTER TABLE memory_store              ENABLE ROW LEVEL SECURITY;
 ALTER TABLE governance_audit_log      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE setup_state               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE governance_review_queue   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE governance_review_decisions ENABLE ROW LEVEL SECURITY;
 
 -- ---------------------------------------------------------------------
 -- Tenant-scoped SELECT policies.
@@ -244,4 +247,38 @@ CREATE POLICY review_queue_admin ON governance_review_queue FOR SELECT
   USING (
     pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
     AND current_setting('app.user_role', true) = 'admin'
+  );
+
+-- ---------------------------------------------------------------------
+-- governance_review_decisions (GM-24): the human review-outcome
+-- substrate. Admin records the outcome (approved | rejected). The
+-- proposer of the underlying queue item also sees the outcome.
+-- No UPDATE/DELETE policies; append-only at the trigger layer (real
+-- schema) plus the absence of any GRANT for those ops.
+-- ---------------------------------------------------------------------
+
+CREATE POLICY review_decisions_insert_admin ON governance_review_decisions FOR INSERT
+  WITH CHECK (
+    pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
+    AND reviewer_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
+    AND current_setting('app.user_role', true) = 'admin'
+  );
+
+CREATE POLICY review_decisions_admin_select ON governance_review_decisions FOR SELECT
+  USING (
+    pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
+    AND current_setting('app.user_role', true) = 'admin'
+  );
+
+-- The proposer of the underlying queue item sees the outcome of
+-- their own staged item.
+CREATE POLICY review_decisions_proposer_select ON governance_review_decisions FOR SELECT
+  USING (
+    pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
+    AND EXISTS (
+      SELECT 1 FROM governance_review_queue q
+       WHERE q.id = governance_review_decisions.review_queue_id
+         AND q.pilot_instance_id = governance_review_decisions.pilot_instance_id
+         AND q.proposer_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
+    )
   );

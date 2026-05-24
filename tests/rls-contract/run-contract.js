@@ -482,3 +482,157 @@ test('governance_review_queue INSERT: cannot impersonate proposer_user_id', asyn
     );
   });
 });
+
+// ---------------------------------------------------------------------
+// governance_review_decisions (GM-24): admin sees all in pilot;
+// proposer sees the outcome of their own queue item; family /
+// caregiver / runtime see nothing. INSERT requires admin role +
+// tenant + no impersonation.
+// ---------------------------------------------------------------------
+
+const DECISION_A = 'aaaaaaaa-dddd-1111-1111-800000000001';
+const DECISION_B = 'bbbbbbbb-dddd-2222-2222-800000000001';
+
+test('governance_review_decisions: admin-A sees the recorded review decision in pilot A', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_admin', pilot: PILOT_A, user: ADMIN_A, userRole: 'admin',
+  }, async (client) => {
+    const ids = await visibleIds(client, 'governance_review_decisions', 'id');
+    assert.ok(ids.includes(DECISION_A), 'admin must see review-decision rows in pilot');
+    assert.equal(ids.includes(DECISION_B), false, 'admin must NOT see pilot-B review decision');
+  });
+});
+
+test('governance_review_decisions: senior-A (proposer of REVIEW_A) sees outcome of their queue item', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    const ids = await visibleIds(client, 'governance_review_decisions', 'id');
+    assert.ok(ids.includes(DECISION_A), 'proposer must see their own queue item outcome');
+    assert.equal(ids.includes(DECISION_B), false, 'proposer must NOT see pilot-B review decision');
+  });
+});
+
+test('governance_review_decisions: family-A sees nothing (not proposer, not admin)', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    const ids = await visibleIds(client, 'governance_review_decisions', 'id');
+    assert.deepEqual(ids, []);
+  });
+});
+
+test('governance_review_decisions: caregiver-A sees nothing', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: CAREGIVER_A, userRole: 'caregiver',
+  }, async (client) => {
+    const ids = await visibleIds(client, 'governance_review_decisions', 'id');
+    assert.deepEqual(ids, []);
+  });
+});
+
+test('governance_review_decisions: cross-pilot — senior-B sees only pilot-B review decision', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_B, user: SENIOR_B, userRole: 'senior',
+  }, async (client) => {
+    const ids = await visibleIds(client, 'governance_review_decisions', 'id');
+    assert.deepEqual(ids.sort(), [DECISION_B]);
+  });
+});
+
+test('governance_review_decisions: lylo_runtime has no grant — SELECT permission denied', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_runtime', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    await assert.rejects(
+      () => client.query('SELECT id FROM governance_review_decisions'),
+      /permission denied/i,
+      'lylo_runtime must be denied at the GRANT layer'
+    );
+  });
+});
+
+test('governance_review_decisions INSERT: non-admin role rejected by WITH CHECK', async () => {
+  const c = await setup();
+  // senior-A tries to insert a review decision for some other queue item.
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    await assert.rejects(
+      () => client.query(
+        'INSERT INTO governance_review_decisions '
+          + '(pilot_instance_id, review_queue_id, reviewer_user_id, reviewer_role, review_outcome, review_reason) '
+          + "VALUES ($1, $2, $3, 'admin', 'approved', 'approved_admin_review')",
+        [PILOT_A, 'aaaaaaaa-eeee-1111-1111-700000000002', SENIOR_A]
+      ),
+      /row.level security|new row violates row.level/i,
+      'non-admin INSERT must be blocked'
+    );
+  });
+});
+
+test('governance_review_decisions INSERT: admin cannot impersonate another reviewer_user_id', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: ADMIN_A, userRole: 'admin',
+  }, async (client) => {
+    // Impersonate FAMILY_A as reviewer (with admin role context).
+    await assert.rejects(
+      () => client.query(
+        'INSERT INTO governance_review_decisions '
+          + '(pilot_instance_id, review_queue_id, reviewer_user_id, reviewer_role, review_outcome, review_reason) '
+          + "VALUES ($1, $2, $3, 'admin', 'approved', 'approved_admin_review')",
+        [PILOT_A, 'aaaaaaaa-eeee-1111-1111-700000000002', FAMILY_A]
+      ),
+      /row.level security|new row violates row.level/i,
+      'INSERT impersonating a different reviewer_user_id must be blocked'
+    );
+  });
+});
+
+test('governance_review_decisions INSERT: cross-pilot rejected (composite FK + RLS)', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: ADMIN_A, userRole: 'admin',
+  }, async (client) => {
+    // Try to record a decision for pilot B's queue row while
+    // operating in pilot A's context. RLS WITH CHECK rejects the
+    // pilot mismatch first.
+    await assert.rejects(
+      () => client.query(
+        'INSERT INTO governance_review_decisions '
+          + '(pilot_instance_id, review_queue_id, reviewer_user_id, reviewer_role, review_outcome, review_reason) '
+          + "VALUES ($1, $2, $3, 'admin', 'approved', 'approved_admin_review')",
+        [PILOT_B, 'bbbbbbbb-eeee-2222-2222-700000000002', ADMIN_A]
+      ),
+      /row.level security|new row violates row.level|foreign key/i,
+      'cross-pilot INSERT must be blocked'
+    );
+  });
+});
+
+test('governance_review_decisions INSERT: duplicate review (UNIQUE on review_queue_id) rejected', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: ADMIN_A, userRole: 'admin',
+  }, async (client) => {
+    // REVIEW_A already has DECISION_A (seeded). Trying to file a
+    // second one fails on the UNIQUE constraint.
+    await assert.rejects(
+      () => client.query(
+        'INSERT INTO governance_review_decisions '
+          + '(pilot_instance_id, review_queue_id, reviewer_user_id, reviewer_role, review_outcome, review_reason) '
+          + "VALUES ($1, $2, $3, 'admin', 'rejected', 'rejected_policy_violation')",
+        [PILOT_A, REVIEW_A, ADMIN_A]
+      ),
+      /duplicate key|unique/i,
+      'second review for same queue row must be rejected'
+    );
+  });
+});

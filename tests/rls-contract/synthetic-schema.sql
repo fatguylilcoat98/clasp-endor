@@ -183,6 +183,37 @@ CREATE TABLE governance_review_queue (
   status               TEXT NOT NULL DEFAULT 'pending_review'
     CHECK (status = 'pending_review'),
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (pilot_instance_id, id),
   FOREIGN KEY (pilot_instance_id, proposer_user_id)
     REFERENCES users (pilot_instance_id, id)
+);
+
+-- GM-24: the review-decision substrate. Structural mirror of
+-- db/migrations/009_review_decisions.sql, MINUS the append-only
+-- and self-review BEFORE-INSERT triggers (the synthetic contract
+-- verifies access-control rules, not write-integrity triggers).
+CREATE TABLE governance_review_decisions (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pilot_instance_id   UUID NOT NULL REFERENCES pilot_instances(id),
+  review_queue_id     UUID NOT NULL,
+  reviewer_user_id    UUID NOT NULL,
+  reviewer_role       TEXT NOT NULL
+    CHECK (reviewer_role = 'admin'),
+  review_outcome      TEXT NOT NULL
+    CHECK (review_outcome IN ('approved', 'rejected')),
+  review_reason       TEXT NOT NULL
+    CHECK (review_reason IN (
+      'approved_admin_review',
+      'rejected_insufficient_evidence',
+      'rejected_policy_violation',
+      'rejected_duplicate',
+      'rejected_admin_review'
+    )),
+  reviewed_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (review_queue_id),
+  UNIQUE (pilot_instance_id, id),
+  FOREIGN KEY (pilot_instance_id, reviewer_user_id)
+    REFERENCES users (pilot_instance_id, id),
+  FOREIGN KEY (pilot_instance_id, review_queue_id)
+    REFERENCES governance_review_queue (pilot_instance_id, id)
 );

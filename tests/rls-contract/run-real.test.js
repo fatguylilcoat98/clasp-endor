@@ -496,3 +496,129 @@ test('real-schema: governance_review_queue append-only — UPDATE raises (trigge
     /append.only/i
   );
 });
+
+// ---------------------------------------------------------------------
+// governance_review_decisions (GM-24) — real-schema RLS, append-only
+// trigger, self-review BEFORE-INSERT trigger.
+// ---------------------------------------------------------------------
+
+const DECISION_A = 'aaaaaaaa-dddd-1111-1111-800000000001';
+const DECISION_B = 'bbbbbbbb-dddd-2222-2222-800000000001';
+
+test('real-schema: governance_review_decisions — admin in pilot sees all rows', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_admin', pilot: PILOT_A, user: ADMIN_A, userRole: 'admin',
+  }, async (client) => {
+    const ids = await visibleIds(client, 'governance_review_decisions', 'id');
+    assert.ok(ids.includes(DECISION_A));
+    assert.equal(ids.includes(DECISION_B), false, 'admin must not see pilot-B decisions');
+  });
+});
+
+test('real-schema: governance_review_decisions — proposer of underlying queue item sees the outcome', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    const ids = await visibleIds(client, 'governance_review_decisions', 'id');
+    assert.ok(ids.includes(DECISION_A), 'proposer must see outcome of their staged item');
+    assert.equal(ids.includes(DECISION_B), false);
+  });
+});
+
+test('real-schema: governance_review_decisions — family / caregiver see nothing', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    assert.deepEqual(await visibleIds(client, 'governance_review_decisions', 'id'), []);
+  });
+});
+
+test('real-schema: governance_review_decisions — lylo_runtime is denied at the GRANT layer', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_runtime', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    await assert.rejects(
+      () => client.query('SELECT id FROM governance_review_decisions'),
+      /permission denied/i
+    );
+  });
+});
+
+test('real-schema: governance_review_decisions INSERT — non-admin rejected (by WITH CHECK, by self-review trigger, or by RLS-narrowed queue lookup)', async () => {
+  // Defense in depth: the BEFORE-INSERT trigger fires before
+  // RLS WITH CHECK. Under a non-admin role context the trigger's
+  // SELECT on governance_review_queue is narrowed by queue RLS,
+  // so the trigger may raise "not found" before WITH CHECK gets
+  // a chance to reject. If the user happens to also be the
+  // proposer, the trigger raises "self-review forbidden".
+  // Any of these is an acceptable rejection of the non-admin path.
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    await assert.rejects(
+      () => client.query(
+        'INSERT INTO governance_review_decisions '
+          + '(pilot_instance_id, review_queue_id, reviewer_user_id, reviewer_role, review_outcome, review_reason) '
+          + "VALUES ($1, $2, $3, 'admin', 'approved', 'approved_admin_review')",
+        [PILOT_A, 'aaaaaaaa-eeee-1111-1111-700000000002', SENIOR_A]
+      ),
+      /row.level security|new row violates row.level|self-review forbidden|review_queue row .* not found/i
+    );
+  });
+});
+
+test('real-schema: governance_review_decisions INSERT — self-review rejected by BEFORE-INSERT trigger', async () => {
+  // The trigger fires regardless of role. Use superuser (bypasses
+  // RLS) so we hit the trigger directly; insert a decision where
+  // reviewer_user_id == the queue row's proposer_user_id.
+  const c = await setup();
+  await assert.rejects(
+    () => c.query(
+      'INSERT INTO governance_review_decisions '
+        + '(pilot_instance_id, review_queue_id, reviewer_user_id, reviewer_role, review_outcome, review_reason) '
+        + "VALUES ($1, $2, $3, 'admin', 'approved', 'approved_admin_review')",
+      // REVIEW_A_2 staged by SENIOR_A — same user tries to review.
+      [PILOT_A, 'aaaaaaaa-eeee-1111-1111-700000000002', SENIOR_A]
+    ),
+    /self-review forbidden/i
+  );
+});
+
+test('real-schema: governance_review_decisions INSERT — duplicate review (UNIQUE) rejected', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: ADMIN_A, userRole: 'admin',
+  }, async (client) => {
+    // REVIEW_A already has DECISION_A seeded; second insert fails UNIQUE.
+    await assert.rejects(
+      () => client.query(
+        'INSERT INTO governance_review_decisions '
+          + '(pilot_instance_id, review_queue_id, reviewer_user_id, reviewer_role, review_outcome, review_reason) '
+          + "VALUES ($1, $2, $3, 'admin', 'rejected', 'rejected_admin_review')",
+        [PILOT_A, REVIEW_A, ADMIN_A]
+      ),
+      /duplicate key|unique/i
+    );
+  });
+});
+
+test('real-schema: governance_review_decisions append-only — UPDATE raises (trigger fires for superuser)', async () => {
+  const c = await setup();
+  await assert.rejects(
+    () => c.query('UPDATE governance_review_decisions SET review_reason = $1 WHERE id = $2', ['mutated', DECISION_A]),
+    /append.only/i
+  );
+});
+
+test('real-schema: governance_review_decisions append-only — DELETE raises', async () => {
+  const c = await setup();
+  await assert.rejects(
+    () => c.query('DELETE FROM governance_review_decisions WHERE id = $1', [DECISION_A]),
+    /append.only/i
+  );
+});

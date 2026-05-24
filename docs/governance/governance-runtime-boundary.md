@@ -234,6 +234,45 @@ and E10 asserts no new vocabulary slipped in.
 See `review-queue-runtime-boundary.md` for the substrate contract
 and `actor-runtime-boundary.md` §4a for the actor's sixth layer.
 
+## 6c. First review-outcome persistence lands (GM-24)
+
+GM-24 introduces `src/actors/review-decision-actor.js` and
+extends `src/review/` with three read+write operations
+(`listPendingReviewItems`, `inspectReviewItem`,
+`recordReviewDecision`). The substrate
+(`governance_review_decisions`) and the actor together prove a
+new invariant:
+
+> You cannot record a review outcome without admin role + a valid
+> `governance.review.decide` Decision + a pending review queue item
+> in the same pilot proposed by a different user.
+
+GM-24 widens this module **minimally**: exactly one new intent
+type (`INTENT_TYPES.GOVERNANCE_REVIEW_DECIDE`), exactly one new
+reason (`REASONS.REVIEW_DECISION_RECORDING_PERMITTED`), exactly
+one new policy-ref entry. The classifier branch returns
+`admissible` unconditionally for this intent type; role
+enforcement (admin only) lives at the actor, not the classifier.
+
+`EVENT_TYPES` remains unchanged in GM-24 (per OQ-24.9 — the
+review-decisions table IS the artifact; an audit row is
+redundant). The GM-18 lock holds; adversarial test F11 asserts
+no new vocabulary slipped in. Snapshot tests C2/C3/C4 catch the
+vocabulary widening at +1 each (REASONS 12 values; INTENT_TYPES
+9 values; OUTCOMES 5 values).
+
+**Constitutional rule** (added in GM-24, applies to every future
+GM): *approval is not authorization; authorization is not
+execution.* Recording a review outcome is a governance artifact
+only. No production code consumes `governance_review_decisions`
+operationally in GM-24. A future execution capability requires
+its own decision gate, its own boundary guard, and its own
+adversarial review.
+
+See `review-decision-runtime-boundary.md` for the substrate
+contract and `actor-runtime-boundary.md` §4b for the actor's
+seventh layer (admin-only role check).
+
 ## 6a. First actor lands (GM-22)
 
 GM-22 introduces `src/actors/` — the first code outside

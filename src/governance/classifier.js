@@ -154,6 +154,13 @@ function classifyExecutionIntent(intent) {
         reason: REASONS.EXTERNAL_SIDE_EFFECTS_NOT_AUTHORIZED,
       });
 
+    case INTENT_TYPES.GOVERNANCE_REVIEW_DECIDE:
+      return _createDecision({
+        intentType: intent.type,
+        decision: DECISION_OUTCOMES.ADMISSIBLE,
+        reason: REASONS.REVIEW_DECISION_RECORDING_PERMITTED,
+      });
+
     default:
       // Belt-and-suspenders: the type was in ALL_INTENT_TYPES (passed
       // the membership check above) but no branch matched. This is a

@@ -147,3 +147,167 @@ test('stageReviewItem: every locked vocabulary value is accepted', async () => {
     assert.equal(client.queries.length, 1, `${decisionIntentType} should be accepted`);
   }
 });
+
+// ---------------------------------------------------------------------
+// GM-24: recordReviewDecision, listPendingReviewItems, inspectReviewItem
+// ---------------------------------------------------------------------
+
+const {
+  recordReviewDecision,
+  listPendingReviewItems,
+  inspectReviewItem,
+  VALID_REVIEW_OUTCOMES,
+  VALID_REVIEW_REASONS,
+} = require('../../src/review/repository');
+
+const ADMIN = 'aaaaaaaa-4444-1111-1111-aaaaaaaaaaaa';
+const QUEUE_ID = 'eeeeeeee-1111-2222-3333-eeeeeeeeeeee';
+const adminCtx = { pilotInstanceId: PILOT, userId: ADMIN, userRole: 'admin' };
+
+function makeFakeDecisionClient() {
+  const queries = [];
+  return {
+    queries,
+    query: async (text, params) => {
+      queries.push({ text, params: params || [] });
+      if (/INSERT INTO governance_review_decisions[\s\S]*RETURNING/i.test(text)) {
+        return {
+          rows: [{ id: 'dddddddd-1111-1111-1111-dddddddddddd', reviewed_at: new Date() }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  };
+}
+
+const validReviewInput = {
+  reviewQueueId: QUEUE_ID,
+  reviewOutcome: 'approved',
+  reviewReason: 'approved_admin_review',
+};
+
+test('recordReviewDecision: rejects missing input', async () => {
+  await assert.rejects(
+    () => recordReviewDecision(makeFakeDecisionClient(), adminCtx),
+    /input is required/
+  );
+  await assert.rejects(
+    () => recordReviewDecision(makeFakeDecisionClient(), adminCtx, null),
+    /input is required/
+  );
+});
+
+test('recordReviewDecision: rejects non-UUID reviewQueueId', async () => {
+  const client = makeFakeDecisionClient();
+  await assert.rejects(
+    () => recordReviewDecision(client, adminCtx, { ...validReviewInput, reviewQueueId: 'x' }),
+    /reviewQueueId must be a UUID/
+  );
+  assert.equal(client.queries.length, 0);
+});
+
+test('recordReviewDecision: rejects reviewOutcome outside locked vocabulary', async () => {
+  const client = makeFakeDecisionClient();
+  await assert.rejects(
+    () => recordReviewDecision(client, adminCtx, { ...validReviewInput, reviewOutcome: 'pending' }),
+    /reviewOutcome must be one of/
+  );
+  assert.equal(client.queries.length, 0);
+});
+
+test('recordReviewDecision: rejects reviewReason outside locked vocabulary', async () => {
+  const client = makeFakeDecisionClient();
+  await assert.rejects(
+    () => recordReviewDecision(client, adminCtx, { ...validReviewInput, reviewReason: 'because' }),
+    /reviewReason must be one of/
+  );
+  assert.equal(client.queries.length, 0);
+});
+
+test('recordReviewDecision: INSERT shape sources reviewer_user_id from session context, NOT input', async () => {
+  const client = makeFakeDecisionClient();
+  const inserted = await recordReviewDecision(
+    client,
+    adminCtx,
+    // An attacker passes reviewerUserId in input; the function MUST ignore it.
+    Object.assign({}, validReviewInput, { reviewerUserId: 'attacker-id-via-input' })
+  );
+  assert.equal(client.queries.length, 1);
+  const params = client.queries[0].params;
+  // SQL parameter positions: $1 pilot, $2 queue, $3 reviewer, $4 role, $5 outcome, $6 reason.
+  assert.equal(params[0], PILOT);
+  assert.equal(params[1], QUEUE_ID);
+  assert.equal(params[2], ADMIN, 'reviewer_user_id must come from session ctx');
+  assert.notEqual(params[2], 'attacker-id-via-input');
+  assert.equal(params[3], 'admin');
+  assert.equal(params[4], 'approved');
+  assert.equal(params[5], 'approved_admin_review');
+  assert.match(inserted.id, /^[0-9a-f-]{36}$/);
+});
+
+test('recordReviewDecision: accepts every value in VALID_REVIEW_OUTCOMES', async () => {
+  for (const outcome of VALID_REVIEW_OUTCOMES) {
+    const client = makeFakeDecisionClient();
+    const reason = outcome === 'approved'
+      ? 'approved_admin_review'
+      : 'rejected_admin_review';
+    await recordReviewDecision(client, adminCtx, { ...validReviewInput, reviewOutcome: outcome, reviewReason: reason });
+    assert.equal(client.queries.length, 1, `${outcome} should be accepted`);
+  }
+});
+
+test('recordReviewDecision: accepts every value in VALID_REVIEW_REASONS', async () => {
+  for (const reviewReason of VALID_REVIEW_REASONS) {
+    const client = makeFakeDecisionClient();
+    const outcome = reviewReason.startsWith('approved_') ? 'approved' : 'rejected';
+    await recordReviewDecision(client, adminCtx, { ...validReviewInput, reviewOutcome: outcome, reviewReason });
+    assert.equal(client.queries.length, 1, `${reviewReason} should be accepted`);
+  }
+});
+
+test('listPendingReviewItems: rejects non-positive limit', async () => {
+  await assert.rejects(
+    () => listPendingReviewItems(makeFakeDecisionClient(), adminCtx, { limit: 0 }),
+    /limit must be a positive integer/
+  );
+  await assert.rejects(
+    () => listPendingReviewItems(makeFakeDecisionClient(), adminCtx, { limit: -1 }),
+    /limit must be a positive integer/
+  );
+  await assert.rejects(
+    () => listPendingReviewItems(makeFakeDecisionClient(), adminCtx, { limit: 1.5 }),
+    /limit must be a positive integer/
+  );
+});
+
+test('listPendingReviewItems: caps limit at MAX_LIST_LIMIT and uses default when omitted', async () => {
+  const client = makeFakeDecisionClient();
+  await listPendingReviewItems(client, adminCtx);
+  assert.equal(client.queries[0].params[0], 50, 'default limit');
+  const client2 = makeFakeDecisionClient();
+  await listPendingReviewItems(client2, adminCtx, { limit: 5000 });
+  assert.equal(client2.queries[0].params[0], 200, 'capped at MAX_LIST_LIMIT');
+});
+
+test('listPendingReviewItems: SELECT LEFT JOINs review_decisions and filters by NULL', async () => {
+  const client = makeFakeDecisionClient();
+  await listPendingReviewItems(client, adminCtx);
+  const sql = client.queries[0].text;
+  assert.match(sql, /FROM governance_review_queue/);
+  assert.match(sql, /LEFT JOIN governance_review_decisions/);
+  assert.match(sql, /WHERE rd\.id IS NULL/);
+});
+
+test('inspectReviewItem: rejects non-UUID id', async () => {
+  await assert.rejects(
+    () => inspectReviewItem(makeFakeDecisionClient(), adminCtx, 'x'),
+    /queueId must be a UUID/
+  );
+});
+
+test('inspectReviewItem: returns null when no row matches', async () => {
+  const client = makeFakeDecisionClient(); // returns empty rows for non-RETURNING queries
+  const r = await inspectReviewItem(client, adminCtx, QUEUE_ID);
+  assert.equal(r, null);
+});

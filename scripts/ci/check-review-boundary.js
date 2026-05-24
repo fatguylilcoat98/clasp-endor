@@ -1,26 +1,30 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * Baseline CI guard — review-queue boundary (GM-23).
+ * Baseline CI guard — review boundary (GM-23 + GM-24).
  *
- * Mechanically enforces the contract documented in
- * docs/governance/review-queue-runtime-boundary.md for src/review/.
+ * Mechanically enforces the contracts documented in
+ * docs/governance/review-queue-runtime-boundary.md AND
+ * docs/governance/review-decision-runtime-boundary.md for
+ * src/review/.
  *
  * Mirrors check-memory-boundary.js in posture but for a tighter
- * surface: the review module touches one table only
- * (governance_review_queue), INSERTs into it only, and has no
- * SELECT/UPDATE/DELETE responsibilities in GM-23 (the read API is
- * deferred to a future GM per OQ-23.11).
+ * surface: in GM-24 the review module touches two tables
+ * (governance_review_queue + governance_review_decisions). The
+ * GM-23 read API was added in GM-24 (per OQ-24.11) — SELECT on
+ * governance_review_queue is now permitted; SELECT on
+ * governance_review_decisions is also permitted via the LEFT JOIN
+ * in listPendingReviewItems.
  *
  * Fails the build on:
  *   1. A forbidden write/DDL SQL keyword (UPDATE, DELETE, DROP,
  *      ALTER, TRUNCATE, GRANT, REVOKE, CREATE — append-only
  *      semantics; INSERT permitted but tracked separately).
  *   2. A FROM/JOIN clause referencing a table outside the review-
- *      module read allowlist (governance_review_queue, users,
- *      pilot_instances).
+ *      module read allowlist (governance_review_queue,
+ *      governance_review_decisions, users, pilot_instances).
  *   3. An INSERT INTO targeting any table other than
- *      governance_review_queue.
+ *      governance_review_queue OR governance_review_decisions.
  *   4. An import of pg outside src/review/client.js.
  *   5. An import of a model SDK (any).
  *   6. An import of an HTTP/server framework (http, https, express,
@@ -51,12 +55,14 @@ const PG_ALLOWED_PATH = 'src/review/client.js';
 
 const SELECT_ALLOWED_TABLES = new Set([
   'governance_review_queue',
+  'governance_review_decisions',
   'users',
   'pilot_instances',
 ]);
 
 const INSERT_ALLOWED_TABLES = new Set([
   'governance_review_queue',
+  'governance_review_decisions',
 ]);
 
 // All write/DDL keywords except INSERT (which is permitted but
@@ -167,7 +173,8 @@ for (const rel of files) {
     const table = m[1].toLowerCase();
     if (!INSERT_ALLOWED_TABLES.has(table)) {
       errors.push(
-        `${rel}: INSERT INTO references non-allowlisted table "${m[1]}" (allowed: governance_review_queue)`
+        `${rel}: INSERT INTO references non-allowlisted table "${m[1]}" `
+          + `(allowed: ${Array.from(INSERT_ALLOWED_TABLES).join(', ')})`
       );
     }
   }

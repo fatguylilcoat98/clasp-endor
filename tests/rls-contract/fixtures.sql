@@ -166,3 +166,52 @@ INSERT INTO governance_review_queue
    'senior',
    '{"content": "synthetic-B candidate", "provenance": "USER_STATED"}'::jsonb,
    '{"source": "synthetic"}'::jsonb);
+
+-- A second queue row per pilot — left unreviewed so the GM-24
+-- listPending matrix has both a reviewed and a pending row to
+-- distinguish. Same proposer as above so the proposer-SELECT
+-- policy continues to work.
+INSERT INTO governance_review_queue
+  (id, pilot_instance_id, decision_intent_type, decision_reason,
+   decision_policy_ref, proposer_user_id, proposer_role,
+   payload_summary, evidence_summary) VALUES
+  ('aaaaaaaa-eeee-1111-1111-700000000002',
+   '11111111-1111-1111-1111-111111111111',
+   'memory.candidate.create',
+   'user_stated_requires_review',
+   'source-of-truth-memory-policy.md §4',
+   'aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa',
+   'senior',
+   '{"content": "synthetic-A pending", "provenance": "USER_STATED"}'::jsonb,
+   '{"source": "synthetic"}'::jsonb),
+  ('bbbbbbbb-eeee-2222-2222-700000000002',
+   '22222222-2222-2222-2222-222222222222',
+   'memory.candidate.create',
+   'ai_inferred_requires_review',
+   'source-of-truth-memory-policy.md §3, §5',
+   'bbbbbbbb-1111-2222-2222-bbbbbbbbbbbb',
+   'senior',
+   '{"content": "synthetic-B pending", "provenance": "AI_INFERRED"}'::jsonb,
+   '{"source": "synthetic"}'::jsonb);
+
+-- GM-24: review-decision seed rows. admin-A approved REVIEW_A;
+-- admin-B rejected REVIEW_B. Each pilot has exactly one reviewed
+-- queue row (REVIEW_*_1) plus exactly one still-pending row
+-- (REVIEW_*_2 inserted above). The matrix uses both states.
+INSERT INTO governance_review_decisions
+  (id, pilot_instance_id, review_queue_id, reviewer_user_id,
+   reviewer_role, review_outcome, review_reason) VALUES
+  ('aaaaaaaa-dddd-1111-1111-800000000001',
+   '11111111-1111-1111-1111-111111111111',
+   'aaaaaaaa-eeee-1111-1111-700000000001',
+   'aaaaaaaa-4444-1111-1111-aaaaaaaaaaaa',
+   'admin',
+   'approved',
+   'approved_admin_review'),
+  ('bbbbbbbb-dddd-2222-2222-800000000001',
+   '22222222-2222-2222-2222-222222222222',
+   'bbbbbbbb-eeee-2222-2222-700000000001',
+   'bbbbbbbb-4444-2222-2222-bbbbbbbbbbbb',
+   'admin',
+   'rejected',
+   'rejected_insufficient_evidence');

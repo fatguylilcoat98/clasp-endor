@@ -52,6 +52,10 @@ const REASONS = Object.freeze({
   EXTERNAL_SIDE_EFFECTS_NOT_AUTHORIZED: 'external_side_effects_not_authorized',
   UNKNOWN_INTENT_TYPE: 'unknown_intent_type',
   MALFORMED_INTENT_PAYLOAD: 'malformed_intent_payload',
+  // GM-24: the classifier admits GOVERNANCE_REVIEW_DECIDE intents
+  // so the review-decision actor has a Decision to verify. The
+  // actor enforces admin-only role; the classifier is stateless.
+  REVIEW_DECISION_RECORDING_PERMITTED: 'review_decision_recording_permitted',
 });
 
 const ALL_REASONS = new Set(Object.values(REASONS));
@@ -82,6 +86,8 @@ const POLICY_REFS = Object.freeze({
     'governance-runtime-boundary.md §3 (default-deny)',
   [REASONS.MALFORMED_INTENT_PAYLOAD]:
     'governance-runtime-boundary.md §3 (default-deny)',
+  [REASONS.REVIEW_DECISION_RECORDING_PERMITTED]:
+    'review-decision-runtime-boundary.md §3',
 });
 
 // Module-private token. External code cannot reach this Symbol —

@@ -21,6 +21,13 @@
  *               staged into governance_review_queue for later
  *               human review. The review-queue actor returns
  *               this outcome on the happy path.
+ *   RECORDED  — GM-24: a human admin's review outcome was
+ *               durably recorded into governance_review_decisions.
+ *               The review-decision actor returns this outcome
+ *               on the happy path. This is the act of *recording*
+ *               a review outcome — it is NOT authorization, NOT
+ *               execution, and NOT a signal to act. Future
+ *               execution gates must be separately approved.
  */
 
 const OUTCOMES = Object.freeze({
@@ -28,6 +35,7 @@ const OUTCOMES = Object.freeze({
   ABSTAINED: 'abstained',
   REJECTED:  'rejected',
   STAGED:    'staged',
+  RECORDED:  'recorded',
 });
 
 module.exports = { OUTCOMES };

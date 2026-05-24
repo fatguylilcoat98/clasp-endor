@@ -52,7 +52,12 @@ function validateContext(ctx) {
   }
 }
 
-const { stageReviewItem } = require('./repository');
+const {
+  stageReviewItem,
+  listPendingReviewItems,
+  inspectReviewItem,
+  recordReviewDecision,
+} = require('./repository');
 
 function buildCtx(client, sessionCtx) {
   return {
@@ -60,6 +65,10 @@ function buildCtx(client, sessionCtx) {
     userId: sessionCtx.userId,
     userRole: sessionCtx.userRole,
     stageReviewItem: (input) => stageReviewItem(client, sessionCtx, input),
+    // GM-24: review-decision read + write.
+    listPendingReviewItems: (options) => listPendingReviewItems(client, sessionCtx, options),
+    inspectReviewItem: (queueId) => inspectReviewItem(client, sessionCtx, queueId),
+    recordReviewDecision: (input) => recordReviewDecision(client, sessionCtx, input),
   };
 }
 
