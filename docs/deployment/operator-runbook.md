@@ -229,15 +229,18 @@ connection strings** (GM-16). The connecting LOGIN role's effective
 identity determines what RLS lets the process see and write — see
 `../governance/rls-privacy-contract.md`.
 
-#### Memory module + companion consumer are library-only today (GM-17 / GM-18 / GM-19)
+#### Memory + companion + conversation are all library-only today (GM-17 / GM-18 / GM-19 / GM-20)
 
 The memory-governance module (`src/memory/`, GM-17, hardened in
-GM-18) and the first companion consumer (`src/companion/`, GM-19)
-are both **libraries**. No process in this release consumes them —
-the runtime boot path (`src/runtime/boot.js`) does not import
-either, the provisioning script does not import either, and no
-HTTP endpoint calls either. Companion behavior, conversation
-runtime, and inference remain explicitly deferred.
+GM-18), the read-only companion consumer (`src/companion/`,
+GM-19), and the first mounted conversation runtime
+(`src/conversation/`, GM-20) are all **libraries**. No process in
+this release consumes them — the runtime boot path
+(`src/runtime/boot.js`) does not import any of them, the
+provisioning script does not import any of them, and no HTTP
+endpoint exists. Companion behavior, transcript persistence, and
+any user-facing conversational surface remain explicitly deferred
+to a future GM behind a separate decision gate.
 
 `LYLO_APP_DATABASE_URL` and the `lylo_app_login` LOGIN role are
 provisioned now so the contract is in place ahead of future GMs
@@ -245,14 +248,22 @@ that introduce production callers; they are not required by boot.
 If you are deploying only the runtime shell, you may leave
 `LYLO_APP_DATABASE_URL` unset and skip the `lylo_app_login` LOGIN
 role — `npm start` will succeed without them. (The CI
-integration-tests job sets them because the GM-17/GM-18/GM-19
-integration suites exercise both libraries through the same LOGIN
-role a future production caller would use.)
+integration-tests job sets them because the
+GM-17/GM-18/GM-19/GM-20 integration suites exercise all three
+libraries through the same LOGIN role a future production caller
+would use.)
 
-When a later GM introduces a production consumer of the memory or
-companion module, this section will be updated to mark
-`LYLO_APP_DATABASE_URL` and `lylo_app_login` as required for that
-process.
+The GM-20 conversation runtime additionally requires a model SDK
+client to be **injected by the caller** — the library does not
+read `ANTHROPIC_API_KEY` or any other model-vendor secret. When a
+later GM mounts the conversation runtime from a process, that GM
+will introduce the operator-facing API-key env var and the
+corresponding outbound-network-egress allowlist; until then, no
+such variable is required.
+
+When a later GM introduces a production consumer of any of these
+modules, this section will be updated to mark the relevant
+environment variables and roles as required for that process.
 
 #### Required environment variables
 

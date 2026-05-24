@@ -160,6 +160,19 @@ RLS policies, or new boundary doc + guard.
 | Input validation BEFORE any DB call; frozen reader; logger hygiene | `tests/companion/reader.test.js` (unit) |
 | Per-role visibility parity; cross-pilot isolation; no-write invariant; one audit row per read; `MemoryRepositoryError` shape from a real FK violation | `tests/integration/companion-read.test.js` |
 
+## 8a. First consumer of the companion reader (GM-20)
+
+GM-20 introduces `src/conversation/` — the first code outside
+`src/companion/` to consume this reader. The conversation runtime
+imports `../companion` (the public entry) and never reaches into
+the companion module's internal files; the boundary guard
+`scripts/ci/check-conversation-boundary.js` enforces that
+discipline mechanically. The conversation runtime is the first
+layer that holds a model SDK client and makes an inference call,
+but it has no write surface — every memory access still flows
+through this reader. See `conversation-runtime-boundary.md` for
+the locked contract.
+
 ## 9. Change control
 
 Adding a new exported companion operation, expanding the reader's

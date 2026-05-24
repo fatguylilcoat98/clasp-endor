@@ -78,7 +78,7 @@ runs both against a Postgres 16 service container.
 
 ## CI enforcement
 
-Thirteen baseline CI jobs gate every PR:
+Fourteen baseline CI jobs gate every PR:
 
 - Six stdlib-only structural guards (format, migration discipline,
   secrets, no-real-data, no-archived-SQL, contamination).
@@ -95,15 +95,26 @@ Thirteen baseline CI jobs gate every PR:
   bans `pg`, model-SDKs, HTTP/server frameworks, and the
   `insertPrivateMemory` identifier; restricts memory imports to
   the public entry only.
+- The **conversation boundary guard** (GM-20) — scopes
+  `src/conversation/`; zero SQL keywords; bans `pg`,
+  HTTP/server frameworks, `child_process`, `worker_threads`,
+  `cluster`, scheduling identifiers, and `fs` write API; the only
+  approved model SDK is `@anthropic-ai/sdk`; memory access must go
+  through `../companion` (public entry only); streaming
+  (`.stream(`, `messages.stream`, `stream: true`) and tool-calling
+  identifiers (`tools`/`tool_choice`/`tool_use`/`tool_result`) are
+  forbidden.
 - The **configuration contract** (`ajv` against
   `companion.schema.json`; positive no-leak fixtures).
-- Runtime + memory + companion **unit tests** (`node:test`,
-  `tests/runtime/*.test.js` + `tests/memory/*.test.js` +
-  `tests/companion/*.test.js`).
+- Runtime + memory + companion + conversation **unit tests**
+  (`node:test`, `tests/runtime/*.test.js` + `tests/memory/*.test.js`
+  + `tests/companion/*.test.js` + `tests/conversation/*.test.js`).
 - **Integration tests** (Postgres 16 service container,
   `--test-concurrency=1`) — boot scenarios, provisioning, GM-16
-  RLS engagement, the GM-17 memory-governance matrix, and the
-  GM-19 companion-read matrix.
+  RLS engagement, the GM-17 memory-governance matrix, the GM-19
+  companion-read matrix, and the GM-20 conversation-mounted matrix
+  (the latter injects a mocked Anthropic SDK and asserts exactly
+  one model call per `respond()`).
 - The **RLS / privacy contract** job runs both the synthetic suite
   (`run-contract.js`) and the real-schema suite (`run-real.test.js`)
   serially against a Postgres 16 service container.
@@ -127,6 +138,7 @@ Thirteen baseline CI jobs gate every PR:
 | Memory-governance runtime library (GM-17) | Landed as a library (`src/memory/`); not mounted by boot. Connects as `lylo_app` via `LYLO_APP_DATABASE_URL` (NO BYPASSRLS); audit-bundled `listVisibleMemories` + `insertPrivateMemory` only; per-transaction `app.pilot_instance_id` / `app.user_id` / `app.user_role` via `set_config`; dedicated boundary guard; 12-scenario integration matrix | `governance/memory-runtime-boundary.md`, `deployment/operator-runbook.md` §8, `tests/integration/memory-governance.test.js` |
 | Memory-governance API hardening (GM-18) | Opaque `MemoryPoolHandle` (WeakMap); `MemoryRepositoryError` wraps pg errors; audit `eventType` locked to `EVENT_TYPES`; `MAX_CONTENT_LENGTH = 65536` bytes; integration scenarios 13-16 prove UPDATE/DELETE denial and end-to-end error sanitization | `governance/memory-runtime-boundary.md` §5a |
 | First read-only governed consumer (GM-19) | Landed as a library (`src/companion/`); not mounted by boot. `createCompanionReader({memoryPool, log?})` returns a frozen reader with `readVisibleMemories` only; reuses `tests/rls-contract/fixtures.sql`; dedicated `check-companion-boundary.js` guard bans `pg` / SQL keywords / HTTP frameworks / model SDKs / the `insertPrivateMemory` identifier; restricts memory imports to the public entry; integration matrix proves visibility-rule parity, cross-pilot isolation, no-write invariant, exactly-one audit row per read, and `MemoryRepositoryError` shape | `governance/companion-runtime-boundary.md`, `deployment/operator-runbook.md` §8, `tests/integration/companion-read.test.js` |
+| First mounted conversational runtime (GM-20) | Landed as a library (`src/conversation/`); not mounted by boot. `createConversationRuntime({companionReader, modelClient, log?, config?})` returns a frozen runtime with `respond()` only; consumes `src/companion` (public entry); first new dependency since GM-0 (`@anthropic-ai/sdk`, pinned `0.98.0`); strictly single-shot, non-streaming, no tool/function calling, no retries inside the runtime, no transcript persistence, no automatic memory creation; dedicated `check-conversation-boundary.js` guard mechanically forbids streaming, tool calling, scheduling, fs writes, HTTP frameworks, process spawning, and every model SDK other than `@anthropic-ai/sdk`; locked configuration defaults (`claude-sonnet-4-6` / `maxTokens=1024` / `temperature=0.3` / `MAX_USER_MESSAGE_BYTES=8192` / `defaultMemoryLimit=20`); deterministic exported `buildPrompt` wraps each memory row in `<<MEMORY id=… provenance=… visibility=… admissibility=…>>…<</MEMORY>>` envelopes; integration matrix (with mocked SDK) proves visibility-rule parity, cross-pilot isolation, no-write invariant, exactly-one `memory.list` audit row per `respond()`, exactly-one SDK call per `respond()`, no streaming/tool-calling fields in the SDK request, `MemoryRepositoryError` propagation; unit-suite sentinel scan proves memory content, user message, and model response never appear in captured logs | `governance/conversation-runtime-boundary.md`, `tests/integration/conversation-mounted.test.js` |
 
 ## What is explicitly deferred
 
