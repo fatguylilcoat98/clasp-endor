@@ -229,27 +229,28 @@ connection strings** (GM-16). The connecting LOGIN role's effective
 identity determines what RLS lets the process see and write — see
 `../governance/rls-privacy-contract.md`.
 
-#### Memory module is library-only today (GM-17 / GM-18)
+#### Memory module + companion consumer are library-only today (GM-17 / GM-18 / GM-19)
 
 The memory-governance module (`src/memory/`, GM-17, hardened in
-GM-18) is a **library**. No process in this release consumes it —
-the runtime boot path (`src/runtime/boot.js`) does not import it,
-the provisioning script does not import it, and no HTTP endpoint
-calls it. Companion behavior, conversation runtime, and inference
-remain explicitly deferred.
+GM-18) and the first companion consumer (`src/companion/`, GM-19)
+are both **libraries**. No process in this release consumes them —
+the runtime boot path (`src/runtime/boot.js`) does not import
+either, the provisioning script does not import either, and no
+HTTP endpoint calls either. Companion behavior, conversation
+runtime, and inference remain explicitly deferred.
 
 `LYLO_APP_DATABASE_URL` and the `lylo_app_login` LOGIN role are
 provisioned now so the contract is in place ahead of future GMs
-that introduce memory-governance callers; they are not required by
-boot. If you are deploying only the runtime shell, you may leave
+that introduce production callers; they are not required by boot.
+If you are deploying only the runtime shell, you may leave
 `LYLO_APP_DATABASE_URL` unset and skip the `lylo_app_login` LOGIN
 role — `npm start` will succeed without them. (The CI
-integration-tests job sets them because the GM-17/GM-18
-integration suite exercises the library through the same LOGIN
+integration-tests job sets them because the GM-17/GM-18/GM-19
+integration suites exercise both libraries through the same LOGIN
 role a future production caller would use.)
 
-When a later GM introduces a production consumer of the memory
-module, this section will be updated to mark
+When a later GM introduces a production consumer of the memory or
+companion module, this section will be updated to mark
 `LYLO_APP_DATABASE_URL` and `lylo_app_login` as required for that
 process.
 

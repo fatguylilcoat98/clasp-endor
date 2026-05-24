@@ -183,6 +183,20 @@ try {
 }
 ```
 
+## 5b. First governed consumer (GM-19)
+
+GM-19 introduces `src/companion/` — the first code outside
+`src/memory/` to consume this library. The companion module is
+**read-only** (`ctx.listVisibleMemories` only; never
+`ctx.insertPrivateMemory`) and is itself library-only (not boot-
+mounted in GM-19). Its locked contract — including the dedicated CI
+guard that bans `pg`, all SQL keywords, model SDKs, HTTP frameworks,
+and the `insertPrivateMemory` identifier inside `src/companion/` — is
+`companion-runtime-boundary.md`. Future GMs that introduce additional
+consumers should follow the same pattern: a new directory with a
+dedicated boundary guard, importing only through `require('../memory')`,
+and never touching internal modules.
+
 ## 6. Boundary guard
 
 `scripts/ci/check-memory-boundary.js` scans `src/memory/` only and

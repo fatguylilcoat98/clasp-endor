@@ -78,7 +78,7 @@ runs both against a Postgres 16 service container.
 
 ## CI enforcement
 
-Twelve baseline CI jobs gate every PR:
+Thirteen baseline CI jobs gate every PR:
 
 - Six stdlib-only structural guards (format, migration discipline,
   secrets, no-real-data, no-archived-SQL, contamination).
@@ -90,13 +90,20 @@ Twelve baseline CI jobs gate every PR:
   and `governance_audit_log` only; FROM/JOIN allowlist includes the
   memory + supporting tables; `pg` import scoped to
   `src/memory/client.js`.
+- The **companion boundary guard** (GM-19) — scopes
+  `src/companion/`; zero SQL keywords (including read keywords);
+  bans `pg`, model-SDKs, HTTP/server frameworks, and the
+  `insertPrivateMemory` identifier; restricts memory imports to
+  the public entry only.
 - The **configuration contract** (`ajv` against
   `companion.schema.json`; positive no-leak fixtures).
-- Runtime + memory **unit tests** (`node:test`,
-  `tests/runtime/*.test.js` + `tests/memory/*.test.js`).
+- Runtime + memory + companion **unit tests** (`node:test`,
+  `tests/runtime/*.test.js` + `tests/memory/*.test.js` +
+  `tests/companion/*.test.js`).
 - **Integration tests** (Postgres 16 service container,
   `--test-concurrency=1`) — boot scenarios, provisioning, GM-16
-  RLS engagement, and the GM-17 memory-governance matrix.
+  RLS engagement, the GM-17 memory-governance matrix, and the
+  GM-19 companion-read matrix.
 - The **RLS / privacy contract** job runs both the synthetic suite
   (`run-contract.js`) and the real-schema suite (`run-real.test.js`)
   serially against a Postgres 16 service container.
@@ -118,6 +125,8 @@ Twelve baseline CI jobs gate every PR:
 | Real-schema RLS migration + `lylo_*` roles (GM-15) | Landed | `db/migrations/007_rls_policies.sql`, `governance/rls-privacy-contract.md` §"Runtime wire-up status" |
 | RLS-engaged runtime + provisioning connection roles (GM-16) | Landed; **RLS engaged in production** via `LYLO_RUNTIME_DATABASE_URL` (lylo_runtime) and `LYLO_SETUP_DATABASE_URL` (lylo_setup); pilot identity env-first via `LYLO_PILOT_INSTANCE_ID` | `deployment/operator-runbook.md` §8, `governance/rls-privacy-contract.md` §"Runtime wire-up status", `tests/integration/rls-engagement.test.js` |
 | Memory-governance runtime library (GM-17) | Landed as a library (`src/memory/`); not mounted by boot. Connects as `lylo_app` via `LYLO_APP_DATABASE_URL` (NO BYPASSRLS); audit-bundled `listVisibleMemories` + `insertPrivateMemory` only; per-transaction `app.pilot_instance_id` / `app.user_id` / `app.user_role` via `set_config`; dedicated boundary guard; 12-scenario integration matrix | `governance/memory-runtime-boundary.md`, `deployment/operator-runbook.md` §8, `tests/integration/memory-governance.test.js` |
+| Memory-governance API hardening (GM-18) | Opaque `MemoryPoolHandle` (WeakMap); `MemoryRepositoryError` wraps pg errors; audit `eventType` locked to `EVENT_TYPES`; `MAX_CONTENT_LENGTH = 65536` bytes; integration scenarios 13-16 prove UPDATE/DELETE denial and end-to-end error sanitization | `governance/memory-runtime-boundary.md` §5a |
+| First read-only governed consumer (GM-19) | Landed as a library (`src/companion/`); not mounted by boot. `createCompanionReader({memoryPool, log?})` returns a frozen reader with `readVisibleMemories` only; reuses `tests/rls-contract/fixtures.sql`; dedicated `check-companion-boundary.js` guard bans `pg` / SQL keywords / HTTP frameworks / model SDKs / the `insertPrivateMemory` identifier; restricts memory imports to the public entry; integration matrix proves visibility-rule parity, cross-pilot isolation, no-write invariant, exactly-one audit row per read, and `MemoryRepositoryError` shape | `governance/companion-runtime-boundary.md`, `deployment/operator-runbook.md` §8, `tests/integration/companion-read.test.js` |
 
 ## What is explicitly deferred
 
