@@ -78,17 +78,25 @@ runs both against a Postgres 16 service container.
 
 ## CI enforcement
 
-Eleven baseline CI jobs gate every PR:
+Twelve baseline CI jobs gate every PR:
 
 - Six stdlib-only structural guards (format, migration discipline,
   secrets, no-real-data, no-archived-SQL, contamination).
 - The **runtime boundary guard** (forbidden SQL keywords, table
-  allowlist, model-SDK and `pg` import scoping).
+  allowlist, model-SDK and `pg` import scoping) — scopes
+  `src/runtime/` + `src/db/`.
+- The **memory boundary guard** (GM-17) — scopes `src/memory/`;
+  `UPDATE`/`DELETE` banned; `INSERT` permitted on `memory_store`
+  and `governance_audit_log` only; FROM/JOIN allowlist includes the
+  memory + supporting tables; `pg` import scoped to
+  `src/memory/client.js`.
 - The **configuration contract** (`ajv` against
   `companion.schema.json`; positive no-leak fixtures).
-- Runtime **unit tests** (`node:test`).
-- Runtime **integration tests** (Postgres 16 service container,
-  `--test-concurrency=1`).
+- Runtime + memory **unit tests** (`node:test`,
+  `tests/runtime/*.test.js` + `tests/memory/*.test.js`).
+- **Integration tests** (Postgres 16 service container,
+  `--test-concurrency=1`) — boot scenarios, provisioning, GM-16
+  RLS engagement, and the GM-17 memory-governance matrix.
 - The **RLS / privacy contract** job runs both the synthetic suite
   (`run-contract.js`) and the real-schema suite (`run-real.test.js`)
   serially against a Postgres 16 service container.
@@ -109,18 +117,26 @@ Eleven baseline CI jobs gate every PR:
 | Synthetic RLS / privacy contract (GM-14) | Landed; CI-enforced | `governance/rls-privacy-contract.md` |
 | Real-schema RLS migration + `lylo_*` roles (GM-15) | Landed | `db/migrations/007_rls_policies.sql`, `governance/rls-privacy-contract.md` §"Runtime wire-up status" |
 | RLS-engaged runtime + provisioning connection roles (GM-16) | Landed; **RLS engaged in production** via `LYLO_RUNTIME_DATABASE_URL` (lylo_runtime) and `LYLO_SETUP_DATABASE_URL` (lylo_setup); pilot identity env-first via `LYLO_PILOT_INSTANCE_ID` | `deployment/operator-runbook.md` §8, `governance/rls-privacy-contract.md` §"Runtime wire-up status", `tests/integration/rls-engagement.test.js` |
+| Memory-governance runtime library (GM-17) | Landed as a library (`src/memory/`); not mounted by boot. Connects as `lylo_app` via `LYLO_APP_DATABASE_URL` (NO BYPASSRLS); audit-bundled `listVisibleMemories` + `insertPrivateMemory` only; per-transaction `app.pilot_instance_id` / `app.user_id` / `app.user_role` via `set_config`; dedicated boundary guard; 12-scenario integration matrix | `governance/memory-runtime-boundary.md`, `deployment/operator-runbook.md` §8, `tests/integration/memory-governance.test.js` |
 
 ## What is explicitly deferred
 
 These items remain out of scope and are blocked behind their listed
 gates:
 
-- **Memory governance runtime** — `memory_store`, `memory_vaults`,
-  `memory_vault_sessions`, `governance_audit_log` are schema-present,
-  RLS-protected, and structurally denied to `lylo_runtime` at the
-  GRANT layer. Reading or writing them requires a future `lylo_app`
-  LOGIN role and the application code that uses it. **Gate:** a
-  future GM milestone with explicit owner approval.
+- **Memory governance — promotion / retraction / supersession / vault opening.**
+  GM-17 landed the first audit-bundled memory surface (read +
+  insert-private only). Visibility promotion (`private` →
+  `family_shared`/`password_locked`), admissibility transitions,
+  retraction, supersession, and vault PIN verification + session
+  opening are all deferred — they need `UPDATE` grants on
+  `memory_store` / `memory_vaults` or a new `WITH CHECK` INSERT
+  policy on `memory_vault_sessions` that GM-15 did not include.
+  **Gate:** a future GM milestone with explicit owner approval and
+  the corresponding grant/policy change.
+- **Companion behavior / conversation runtime / inference.** Gated
+  behind the additional memory-governance ops above and explicit
+  owner approval for the model-SDK introduction.
 - **Companion behavior** — conversation, inference, reminders.
   **Gate:** memory-governance runtime + the RLS contract.
 - **Setup Mode iterative wizard** — the one-shot provisioning script
@@ -149,12 +165,20 @@ shell of the master template is deployment-ready as a release
 candidate**.
 
 With GM-16 landed, the dormant GM-15 RLS policies are engaged in
-production via the `lylo_runtime` and `lylo_setup` LOGIN roles. The
-next dangerous step — the first one that **adds** to the runtime's
-read surface — is the **memory-governance runtime extraction**:
-introducing the `lylo_app` LOGIN role and the application code that
-reads / writes `memory_store`, the vault tables, and the audit log
-under the validated RLS policies.
+production via the `lylo_runtime` and `lylo_setup` LOGIN roles.
+GM-17 extracted the first **memory-governance runtime library**
+under the new `lylo_app` LOGIN role: audit-bundled read + insert-
+private operations, per-transaction `set_config` of the three
+`app.*` session vars, a dedicated boundary guard, and the 12-
+scenario integration matrix proving cross-pilot isolation,
+family/admin/vault visibility rules, audit atomicity, and
+`lylo_app_login` posture (no `BYPASSRLS`).
+
+The next dangerous step is the **additional memory-governance ops**
+that need new grants or policies: visibility promotion,
+admissibility transitions, retraction, supersession, and vault PIN
+verification + session opening. Each is gated on its own owner
+decision.
 
 ## Cross-references
 

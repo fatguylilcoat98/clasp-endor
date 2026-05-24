@@ -210,6 +210,7 @@ in either suite fails the build. See `baseline-ci.md`.
 | Loader sets `app.pilot_instance_id` via env-first `LYLO_PILOT_INSTANCE_ID` (OQ-15.2) | Landed | GM-16 |
 | Provisioning connects as `lylo_setup` via `LYLO_SETUP_DATABASE_URL` | Landed | GM-16 |
 | `rls-engagement` integration test proves RLS is engaged (not silently bypassed) | Landed | GM-16 |
+| Memory-governance module connects as `lylo_app` via `LYLO_APP_DATABASE_URL`; `withMemoryContext` binds `app.pilot_instance_id` / `app.user_id` / `app.user_role` per transaction; audit-bundled read + insert-private surface; dedicated `check-memory-boundary.js` guard; integration matrix proves cross-pilot isolation, family/admin/vault visibility rules, default-deny, audit rollback, cross-user impersonation blocked, and `lylo_app_login` carries no `BYPASSRLS` | Landed | GM-17 |
 
 As of GM-16 the connection wire-up is complete:
 

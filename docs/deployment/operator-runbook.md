@@ -235,6 +235,7 @@ identity determines what RLS lets the process see and write — see
 |---|---|---|
 | `LYLO_RUNTIME_DATABASE_URL` | Runtime | Connection string for a LOGIN role whose effective identity is `lylo_runtime` (SELECT on the four config tables only). Opaque string; never logged. |
 | `LYLO_SETUP_DATABASE_URL` | Provisioning script | Connection string for a LOGIN role whose effective identity is `lylo_setup` (BYPASSRLS; INSERT/SELECT on the config tables + `users`). Opaque string; never logged. |
+| `LYLO_APP_DATABASE_URL` | Memory-governance module (GM-17) | Connection string for a LOGIN role whose effective identity is `lylo_app` (SELECT on memory + supporting tables; INSERT on `memory_store` and `governance_audit_log`; `UPDATE (revoked_at)` on `memory_vault_sessions`). **DO NOT grant BYPASSRLS** — see "LOGIN role provisioning" below. Read by `src/memory/client.js`. Required only when a process consumes the memory module; `parseEnv` does not require it in GM-17 because boot does not mount the memory module. |
 | `LYLO_PILOT_INSTANCE_ID` | Runtime | UUID of the pilot this process serves. Set on `app.pilot_instance_id` inside every loader transaction so tenant-scoped RLS narrows reads. Required; missing or non-UUID values yield `configuration-invalid`. |
 | `LYLO_SHELL_MODE` | Runtime | `true` to mount the runtime; `false` (default) is `inert`. |
 
@@ -269,19 +270,28 @@ migrations 001–007:
 CREATE ROLE lylo_runtime_login LOGIN PASSWORD '...' IN ROLE lylo_runtime;
 CREATE ROLE lylo_setup_login   LOGIN PASSWORD '...' IN ROLE lylo_setup;
 ALTER ROLE  lylo_setup_login   BYPASSRLS;
+-- GM-17: memory-governance LOGIN role.
+CREATE ROLE lylo_app_login     LOGIN PASSWORD '...' IN ROLE lylo_app;
+-- DELIBERATELY no BYPASSRLS on lylo_app_login — see warning below.
 ```
 
-The base roles `lylo_runtime` / `lylo_setup` are created by
-`db/migrations/007_rls_policies.sql`. The LOGIN roles inherit table
-grants via `IN ROLE`, but a critical Postgres detail applies:
-**`BYPASSRLS` is a role attribute that does not propagate through role
-membership**. The provisioning LOGIN role must carry `BYPASSRLS`
-itself; without it the bootstrap INSERTs hit RLS default-deny and
-fail. The runtime LOGIN role does **not** get `BYPASSRLS` — it must
-remain subject to RLS.
+The base roles `lylo_runtime` / `lylo_setup` / `lylo_app` are
+created by `db/migrations/007_rls_policies.sql`. The LOGIN roles
+inherit table grants via `IN ROLE`, but a critical Postgres detail
+applies: **`BYPASSRLS` is a role attribute that does not propagate
+through role membership**. Each LOGIN role's `BYPASSRLS` posture is
+set explicitly.
 
-Passwords are operator-owned secrets; the runtime and the provisioning
-script never log them.
+**Per-role `BYPASSRLS` posture (this matters):**
+
+| LOGIN role | `BYPASSRLS`? | Reason |
+|---|---|---|
+| `lylo_runtime_login` | **No** | The config loader must remain subject to RLS — the bootstrap policy plus tenant-scope are how cross-pilot isolation is enforced. |
+| `lylo_setup_login` | **Yes** | The provisioning script seeds bootstrap rows before any session-variable context exists; without `BYPASSRLS` the INSERTs hit RLS default-deny and fail. |
+| `lylo_app_login` | **No** — **DO NOT grant `BYPASSRLS` to this role.** | The memory-governance module must remain subject to RLS in every production path. An operator who accidentally grants `BYPASSRLS` to `lylo_app_login` silently disables every privacy guarantee in `../governance/memory-runtime-boundary.md` and `../governance/rls-privacy-contract.md`. The CI integration test asserts `pg_roles.rolbypassrls = false` for this role as a regression guard. |
+
+Passwords are operator-owned secrets; the runtime, the provisioning
+script, and the memory module never log them.
 
 ### Provision the instance (first-time setup)
 
