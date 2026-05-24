@@ -18,8 +18,10 @@ exception (see "The ajv exception" below).
 | Configuration contract | `check-config-schema.js` | `companion.schema.json` compiles; `additionalProperties:false` on every object schema; the contract version agrees across schema and example; `companion.example.json` validates (template mode) with identity fields blank; every `tests/config/` fixture passes or fails as expected; deployed mode accepts a filled config and rejects a blank one. |
 | Contamination scanner | `check-contamination.js` | No known reference-system identifier (`Mattie`, `Sandy`, `MATTIE_SOUL`) in the scoped roots (`config/`, `scripts/validate/`, `src/`). |
 | Runtime boundary guard | `check-runtime-boundary.js` | In `src/runtime/` and `src/db/`: no forbidden SQL keyword (`INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`/`TRUNCATE`/`GRANT`/`REVOKE`/`CREATE`); every `FROM`/`JOIN` references the locked allowlist (`pilot_instances`, `companion_profile`, `supported_person_profile`, `setup_state`); no model-SDK import (`openai`, `anthropic`, `@anthropic-ai/sdk`, `@openai/*`); `pg` is imported only by `src/db/client.js`. See `runtime-boundary.md`. |
+| RLS / privacy contract | `tests/rls-contract/run-contract.js` | Synthetic RLS / privacy contract: applies a generic schema, candidate policies, and two-pilot fixtures to a throwaway Postgres, then asserts the visibility / write matrix (cross-pilot isolation, memory-store rules per visibility level, vault-session row-state model, admin denial on private memories, default-deny). See `rls-privacy-contract.md`. |
 
-All eight guards are **enforced** — a violation fails the build.
+All eight previous guards plus the RLS / privacy contract are
+**enforced** — a violation fails the build.
 
 ## Runtime tests
 
@@ -49,15 +51,9 @@ so the configuration contract has exactly one interpreter.
 
 ## What is scaffold / deferred
 
-- **RLS / privacy contract suite.** The synthetic RLS / privacy contract
-  (a synthetic schema, a test harness, and a test matrix) is the
-  platform's binding privacy contract. It exists, already generic, in
-  the reference system and is to be ported into `tests/rls-contract/` in
-  a dedicated follow-up PR — porting and generalizing a large multi-file
-  suite is its own independently reviewable unit and is kept out of this
-  baseline-CI infrastructure PR. The `rls-contract` CI job is a
-  **scaffold** until then: it reports status and passes. See
-  `../../tests/rls-contract/README.md`.
+- (Nothing — the previously-scaffolded `rls-contract` job is now a
+  real job running the synthetic RLS / privacy contract suite. See the
+  table above and `rls-privacy-contract.md`.)
 
 ## Limitations
 

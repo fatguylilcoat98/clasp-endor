@@ -30,6 +30,10 @@ Documentation for the Lylo Companion golden master template.
   validation modes.
 - `governance/runtime-boundary.md` — the locked runtime boundary the
   configuration loader obeys, and the guards that enforce it.
+- `governance/rls-privacy-contract.md` — the synthetic RLS / privacy
+  contract: candidate policies, the DB-role model, and the
+  session-variable convention that GM-15 will apply to the real
+  schema.
 
 ## Deployment
 
@@ -44,6 +48,6 @@ Documentation for the Lylo Companion golden master template.
 
 ## Status
 
-GM-13. The runtime shell is declared a deployment-ready release
-candidate; the Render / Supabase portions of the `deployment/` section
-are still placeholders until a later GM PR populates them.
+GM-14. The synthetic RLS / privacy contract is ported and
+CI-enforced; the real RLS migration is the GM-15 gate. The Render /
+Supabase portions of the `deployment/` section remain placeholders.

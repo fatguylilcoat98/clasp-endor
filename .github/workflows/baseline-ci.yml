@@ -148,12 +148,29 @@ jobs:
         run: node --test --test-concurrency=1 tests/integration/*.test.js
 
   rls-contract:
-    name: RLS / privacy contract (scaffold)
+    name: RLS / privacy contract
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lylo_rls
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
-      - name: Contract suite status
-        run: |
-          echo "The synthetic RLS/privacy contract suite is not yet ported."
-          echo "See tests/rls-contract/README.md. This job is a scaffold; it"
-          echo "will run the suite once it lands in a dedicated follow-up PR."
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run RLS contract suite
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/lylo_rls
+        run: node --test tests/rls-contract/run-contract.js

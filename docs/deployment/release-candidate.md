@@ -98,11 +98,18 @@ gates:
 
 - **Memory governance runtime** — `memory_store`, `memory_vaults`,
   `memory_vault_sessions`, `governance_audit_log` are schema-present
-  but runtime-absent. **Gate:** the RLS / privacy contract suite must
-  be ported and passing first.
-- **RLS policies** — schema is RLS-ready; no policies exist; the
-  `rls-contract` CI job is still a scaffold. **Gate:** dedicated port
-  PR.
+  but runtime-absent. **Gate:** the real RLS migration (GM-15) must
+  apply the contracted policies to the real schema before any code
+  reads or writes these tables.
+- **RLS policies on the real schema** — the synthetic contract suite
+  is **ported and CI-enforced** (GM-14, `tests/rls-contract/`,
+  `rls-privacy-contract.md`). The real `db/migrations/` schema is
+  still RLS-free; the policies are validated in synthetic. **Gate:**
+  GM-15 atomic migration that introduces the DB-role model
+  (`lylo_runtime` / `lylo_app` / `lylo_setup` / `lylo_admin`),
+  enables RLS on the ten client-scoped tables, and applies the
+  validated policies. Also wires the runtime config loader to
+  connect as `lylo_runtime` and `SET LOCAL app.*` per request.
 - **Companion behavior** — conversation, inference, reminders.
   **Gate:** memory-governance runtime + the RLS contract.
 - **Setup Mode iterative wizard** — the one-shot provisioning script
