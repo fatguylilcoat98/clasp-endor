@@ -81,7 +81,9 @@ const FORBIDDEN_MODULE_EXACT = new Set([
 ]);
 const FORBIDDEN_MODULE_PREFIXES = ['@anthropic-ai/', '@openai/'];
 
-// Cross-layer paths the actor module must not reach.
+// Cross-layer paths the actor module must not reach. Note that
+// `../review` is permitted (entry-only, see PUBLIC_ENTRY_LAYERS
+// below) — the GM-23 review-queue actor depends on it.
 const FORBIDDEN_PATH_PREFIXES = [
   '../runtime',
   '../db',
@@ -91,17 +93,21 @@ const FORBIDDEN_PATH_PREFIXES = [
   '../companion',
 ];
 
-// Public-entry-only rule for the two layers the actor IS allowed
-// to import. The actor talks to governance for Decisions and to
-// the conversation runtime via its public entry — anything deeper
-// (e.g. `../governance/classifier`) is rejected.
-const PUBLIC_ENTRY_LAYERS = ['../governance', '../conversation'];
+// Public-entry-only rule for the layers actors ARE allowed to
+// import. Actors talk to governance for Decisions, to the
+// conversation runtime for the response-delivery action (GM-22),
+// and to the review-queue substrate for requires_review staging
+// (GM-23). Anything deeper (e.g. `../governance/classifier`,
+// `../review/repository`) is rejected.
+const PUBLIC_ENTRY_LAYERS = ['../governance', '../conversation', '../review'];
 const DEEPER_RE = (layer) => new RegExp(`^${layer.replace(/\//g, '\\/')}\\/.+`);
 const ENTRY_PATHS = new Set([
   '../governance',
   '../governance/index',
   '../conversation',
   '../conversation/index',
+  '../review',
+  '../review/index',
 ]);
 
 // Identifier-level scans (post-comment-stripping).

@@ -3,12 +3,12 @@
 Migrations for the Lylo Companion platform live here, one file per
 migration, numbered sequentially (`NNN_short_description.sql`).
 
-## Status (GM-15)
+## Status (GM-23)
 
-Migrations `001`–`007` are in place: the GM-3 baseline schema plus the
-GM-15 RLS / privacy policies. The master starts a **clean** migration
-chain — no historical or archived SQL is carried over from any
-reference system.
+Migrations `001`–`008` are in place: the GM-3 baseline schema, the
+GM-15 RLS / privacy policies, and the GM-23 review-queue substrate.
+The master starts a **clean** migration chain — no historical or
+archived SQL is carried over from any reference system.
 
 | Migration | Establishes |
 |---|---|
@@ -18,21 +18,22 @@ reference system.
 | `004_memory_store.sql` | `memory_store` with provenance / visibility / admissibility columns + an immutability trigger. |
 | `005_audit_log.sql` | `governance_audit_log` + an append-only trigger. |
 | `006_setup_state.sql` | `setup_state`. |
-| `007_rls_policies.sql` | The four `lylo_*` DB roles, schema USAGE + per-table GRANTs, `ENABLE ROW LEVEL SECURITY` on the ten client-scoped tables, and the validated RLS policies. See `docs/governance/rls-privacy-contract.md`. RLS is dormant in production until GM-16 wires the connection roles. |
+| `007_rls_policies.sql` | The four `lylo_*` DB roles, schema USAGE + per-table GRANTs, `ENABLE ROW LEVEL SECURITY` on the ten client-scoped tables, and the validated RLS policies. See `docs/governance/rls-privacy-contract.md`. RLS is engaged in production as of GM-16. |
+| `008_review_queue.sql` | `governance_review_queue` — the GM-23 durable substrate for `requires_review` Decisions. CHECK constraints mirror GM-21 INTENT_TYPES + REASONS; `status` is locked to `'pending_review'`; a BEFORE-UPDATE-OR-DELETE trigger enforces append-only; three RLS policies (insert_own / proposer SELECT / admin SELECT) gate access; INSERT grants only to `lylo_app`, SELECT to `lylo_app` and `lylo_admin`, no grants to `lylo_runtime` or `lylo_setup`. See `docs/governance/review-queue-runtime-boundary.md`. |
 
-### Deferred — not in GM-15
+### Deferred — not in GM-23
 
-- **Runtime / provisioning connection wire-up.** GM-15 installs the
-  `lylo_*` roles and the policies; GM-16 will switch the runtime
-  (`src/runtime/`, `src/db/`) and the provisioning script
-  (`scripts/setup/`) onto those roles via
-  `LYLO_RUNTIME_DATABASE_URL` and `LYLO_SETUP_DATABASE_URL`. See
-  `docs/governance/rls-privacy-contract.md` §"Runtime wire-up status".
 - **Admissibility lifecycle.** GM-3 ships the `admissibility_state`
   column and the `superseded_by` link only; the proposed/pending/verified
-  flow, dispute handling, the authority-validation workflow, and the
-  review queue are a later migration.
-- Derived-memory, outbound-message, and compose-authorization tables.
+  flow, dispute handling, and the authority-validation workflow
+  remain deferred.
+- **Review-queue lifecycle beyond staging.** GM-23 ships the
+  staging substrate only — there is no dequeue path, no approval
+  engine, no status transitions, no auto-action, no notifications,
+  no human-review surface. These are future decision gates with
+  their own OQ sets.
+- Derived-memory, outbound-message, and compose-authorization
+  tables.
 
 ## Rules
 

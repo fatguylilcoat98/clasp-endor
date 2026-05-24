@@ -250,10 +250,15 @@ test('src/actors/index: re-exports createResponseDeliveryActor and OUTCOMES only
 
 // ---- locked OUTCOMES ----
 
-test('OUTCOMES constants are the locked three-way set', () => {
+test('OUTCOMES constants are the locked four-way set (GM-22 + GM-23)', () => {
+  // GM-22 introduced executed / abstained / rejected. GM-23 added
+  // `staged` for the review-queue actor's happy path. The shared
+  // OUTCOMES enum is the locked vocabulary; any addition fails
+  // this test and forces a paired review of the actor boundary
+  // doc and the GM-23 adversarial snapshot.
   assert.deepEqual(
     Object.values(OUTCOMES).sort(),
-    ['abstained', 'executed', 'rejected']
+    ['abstained', 'executed', 'rejected', 'staged']
   );
 });
 

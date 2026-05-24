@@ -208,6 +208,32 @@ decisions must satisfy this contract:
 GM-21 ships the classifier, the Decision shape, and the contract
 above. Steps 1–5 are GM-22+ work.
 
+## 6b. First requires-review persistence lands (GM-23)
+
+GM-23 introduces `src/review/` and `src/actors/review-queue-actor.js`
+— the first time a `requires_review` Decision can be durably
+captured. The substrate (`governance_review_queue`) and the actor
+together prove the invariant:
+
+> You cannot persist a review item without a valid `requires_review`
+> Decision.
+
+GM-23 does NOT change this module. The classifier's outputs and
+the Decision shape are unchanged. What GM-23 adds is the receiving
+end: a substrate that mirrors GM-21 intent types + reasons via DB
+CHECK constraints, an append-only table (BEFORE-UPDATE-OR-DELETE
+trigger raises), three RLS policies (insert_own / proposer SELECT
+/ admin SELECT), and the review-queue actor's sixth verification
+layer (`decision.decision === REQUIRES_REVIEW`).
+
+`EVENT_TYPES` remains unchanged in GM-23 (per OQ-23.4 — the queue
+table IS the artifact; an audit row is redundant). The GM-18 lock
+holds; adversarial test C1 still snapshots the locked vocabulary
+and E10 asserts no new vocabulary slipped in.
+
+See `review-queue-runtime-boundary.md` for the substrate contract
+and `actor-runtime-boundary.md` §4a for the actor's sixth layer.
+
 ## 6a. First actor lands (GM-22)
 
 GM-22 introduces `src/actors/` — the first code outside

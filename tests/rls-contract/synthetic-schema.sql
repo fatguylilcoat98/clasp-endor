@@ -140,3 +140,49 @@ CREATE TABLE setup_state (
   completed_at       TIMESTAMPTZ,
   UNIQUE (pilot_instance_id, step_key)
 );
+
+-- GM-23: the review-queue substrate. Structural mirror of
+-- db/migrations/008_review_queue.sql, MINUS the append-only trigger
+-- (the synthetic contract verifies access-control rules, not
+-- write-integrity triggers — same convention as memory_store and
+-- governance_audit_log).
+CREATE TABLE governance_review_queue (
+  id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pilot_instance_id    UUID NOT NULL REFERENCES pilot_instances(id),
+  decision_intent_type TEXT NOT NULL
+    CHECK (decision_intent_type IN (
+      'response.deliver',
+      'memory.candidate.create',
+      'memory.visibility.promote',
+      'memory.retract',
+      'memory.supersede',
+      'vault.session.open',
+      'vault.session.revoke',
+      'external.side_effect'
+    )),
+  decision_reason      TEXT NOT NULL
+    CHECK (decision_reason IN (
+      'response_delivery_permitted',
+      'ai_inferred_requires_review',
+      'user_stated_requires_review',
+      'verified_fact_self_promotion_forbidden',
+      'visibility_promotion_requires_authority',
+      'retraction_infrastructure_not_available',
+      'supersession_infrastructure_not_available',
+      'vault_infrastructure_not_available',
+      'external_side_effects_not_authorized',
+      'unknown_intent_type',
+      'malformed_intent_payload'
+    )),
+  decision_policy_ref  TEXT NOT NULL,
+  proposer_user_id     UUID NOT NULL,
+  proposer_role        TEXT NOT NULL
+    CHECK (proposer_role IN ('senior', 'family', 'caregiver', 'admin', 'system')),
+  payload_summary      JSONB,
+  evidence_summary     JSONB,
+  status               TEXT NOT NULL DEFAULT 'pending_review'
+    CHECK (status = 'pending_review'),
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  FOREIGN KEY (pilot_instance_id, proposer_user_id)
+    REFERENCES users (pilot_instance_id, id)
+);

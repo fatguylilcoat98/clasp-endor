@@ -411,3 +411,88 @@ test('real-schema: default-deny — lylo_app with no session-variable context se
     assert.deepEqual(ids, []);
   });
 });
+
+// ---------------------------------------------------------------------
+// governance_review_queue (GM-23) — real-schema mirror of the synthetic
+// proposer/admin/non-visibility matrix.
+// ---------------------------------------------------------------------
+
+const REVIEW_A = 'aaaaaaaa-eeee-1111-1111-700000000001';
+const REVIEW_B = 'bbbbbbbb-eeee-2222-2222-700000000001';
+
+test('real-schema: governance_review_queue — senior proposer sees own row', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    const ids = await visibleIds(client, 'governance_review_queue', 'id');
+    assert.ok(ids.includes(REVIEW_A));
+    assert.equal(ids.includes(REVIEW_B), false);
+  });
+});
+
+test('real-schema: governance_review_queue — admin in pilot sees all rows', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_admin', pilot: PILOT_A, user: ADMIN_A, userRole: 'admin',
+  }, async (client) => {
+    const ids = await visibleIds(client, 'governance_review_queue', 'id');
+    assert.ok(ids.includes(REVIEW_A));
+    assert.equal(ids.includes(REVIEW_B), false);
+  });
+});
+
+test('real-schema: governance_review_queue — family/caregiver see nothing', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    assert.deepEqual(await visibleIds(client, 'governance_review_queue', 'id'), []);
+  });
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: CAREGIVER_A, userRole: 'caregiver',
+  }, async (client) => {
+    assert.deepEqual(await visibleIds(client, 'governance_review_queue', 'id'), []);
+  });
+});
+
+test('real-schema: governance_review_queue — lylo_runtime is denied at the GRANT layer', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_runtime', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    await assert.rejects(
+      () => client.query('SELECT id FROM governance_review_queue'),
+      /permission denied/i
+    );
+  });
+});
+
+test('real-schema: governance_review_queue INSERT — impersonation rejected by WITH CHECK', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    await assert.rejects(
+      () => client.query(
+        'INSERT INTO governance_review_queue '
+          + '(pilot_instance_id, decision_intent_type, decision_reason, decision_policy_ref, proposer_user_id, proposer_role) '
+          + "VALUES ($1, 'memory.candidate.create', 'ai_inferred_requires_review', 'x', $2, 'senior')",
+        [PILOT_A, SENIOR_A]
+      ),
+      /row.level security|new row violates row.level/i
+    );
+  });
+});
+
+test('real-schema: governance_review_queue append-only — UPDATE raises (trigger fires for superuser)', async () => {
+  // The contract suite connects as superuser (DROP+CREATE schema in
+  // `before`). The append-only trigger fires regardless of role, so
+  // the UPDATE attempt here raises.
+  const c = await setup();
+  // Use the superuser client outside withContext (no SET LOCAL ROLE).
+  await assert.rejects(
+    () => c.query('UPDATE governance_review_queue SET decision_policy_ref = $1 WHERE id = $2', ['mutated', REVIEW_A]),
+    /append.only/i
+  );
+});

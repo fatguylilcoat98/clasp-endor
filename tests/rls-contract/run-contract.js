@@ -391,3 +391,94 @@ test('default-deny: lylo_app with no session-variable context sees no rows', asy
     assert.deepEqual(ids, []);
   });
 });
+
+// ---------------------------------------------------------------------
+// governance_review_queue (GM-23): proposer / admin / others visibility
+// ---------------------------------------------------------------------
+
+const REVIEW_A = 'aaaaaaaa-eeee-1111-1111-700000000001';
+const REVIEW_B = 'bbbbbbbb-eeee-2222-2222-700000000001';
+
+test('governance_review_queue: senior-A (proposer) sees own pending review item', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    const ids = await visibleIds(client, 'governance_review_queue', 'id');
+    assert.ok(ids.includes(REVIEW_A), 'proposer must see own pending review row');
+    assert.equal(ids.includes(REVIEW_B), false, 'proposer must NOT see pilot-B review row');
+  });
+});
+
+test('governance_review_queue: admin-A sees all pending review items in pilot A', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_admin', pilot: PILOT_A, user: ADMIN_A, userRole: 'admin',
+  }, async (client) => {
+    const ids = await visibleIds(client, 'governance_review_queue', 'id');
+    assert.ok(ids.includes(REVIEW_A), 'admin must see review-queue rows in pilot');
+    assert.equal(ids.includes(REVIEW_B), false, 'admin must NOT see pilot-B review row');
+  });
+});
+
+test('governance_review_queue: family-A (non-proposer, non-admin) sees nothing', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    const ids = await visibleIds(client, 'governance_review_queue', 'id');
+    assert.deepEqual(ids, []);
+  });
+});
+
+test('governance_review_queue: caregiver-A sees nothing', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: CAREGIVER_A, userRole: 'caregiver',
+  }, async (client) => {
+    const ids = await visibleIds(client, 'governance_review_queue', 'id');
+    assert.deepEqual(ids, []);
+  });
+});
+
+test('governance_review_queue: cross-pilot — senior-B sees only pilot-B review row', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_B, user: SENIOR_B, userRole: 'senior',
+  }, async (client) => {
+    const ids = await visibleIds(client, 'governance_review_queue', 'id');
+    assert.ok(ids.includes(REVIEW_B));
+    assert.equal(ids.includes(REVIEW_A), false);
+  });
+});
+
+test('governance_review_queue: lylo_runtime has no grant — SELECT permission denied', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_runtime', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    await assert.rejects(
+      () => client.query('SELECT id FROM governance_review_queue'),
+      /permission denied/i,
+      'lylo_runtime must be denied at the GRANT layer'
+    );
+  });
+});
+
+test('governance_review_queue INSERT: cannot impersonate proposer_user_id', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    await assert.rejects(
+      () => client.query(
+        'INSERT INTO governance_review_queue '
+          + '(pilot_instance_id, decision_intent_type, decision_reason, decision_policy_ref, proposer_user_id, proposer_role) '
+          + "VALUES ($1, 'memory.candidate.create', 'ai_inferred_requires_review', 'x', $2, 'senior')",
+        [PILOT_A, SENIOR_A]
+      ),
+      /row.level security|new row violates row.level/i,
+      'INSERT impersonating another proposer must be blocked'
+    );
+  });
+});

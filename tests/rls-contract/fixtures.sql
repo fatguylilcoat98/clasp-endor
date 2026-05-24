@@ -139,3 +139,30 @@ INSERT INTO governance_audit_log (pilot_instance_id, target_user_id, event_type,
    'bbbbbbbb-1111-2222-2222-bbbbbbbbbbbb',
    'senior',
    'allowed');
+
+-- GM-23: review-queue seed rows. One per pilot, each proposed by the
+-- pilot's senior. The fixture seeds rows directly (the synthetic
+-- runner connects as superuser and bypasses RLS for seeding); the
+-- subsequent matrix exercises SELECT visibility per role.
+INSERT INTO governance_review_queue
+  (id, pilot_instance_id, decision_intent_type, decision_reason,
+   decision_policy_ref, proposer_user_id, proposer_role,
+   payload_summary, evidence_summary) VALUES
+  ('aaaaaaaa-eeee-1111-1111-700000000001',
+   '11111111-1111-1111-1111-111111111111',
+   'memory.candidate.create',
+   'ai_inferred_requires_review',
+   'source-of-truth-memory-policy.md §3, §5',
+   'aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa',
+   'senior',
+   '{"content": "synthetic-A candidate", "provenance": "AI_INFERRED"}'::jsonb,
+   '{"source": "synthetic"}'::jsonb),
+  ('bbbbbbbb-eeee-2222-2222-700000000001',
+   '22222222-2222-2222-2222-222222222222',
+   'memory.candidate.create',
+   'user_stated_requires_review',
+   'source-of-truth-memory-policy.md §4',
+   'bbbbbbbb-1111-2222-2222-bbbbbbbbbbbb',
+   'senior',
+   '{"content": "synthetic-B candidate", "provenance": "USER_STATED"}'::jsonb,
+   '{"source": "synthetic"}'::jsonb);

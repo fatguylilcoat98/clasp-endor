@@ -1,29 +1,36 @@
 'use strict';
 /*
- * Actors public API — GM-22.
+ * Actors public API — GM-22 + GM-23.
  *
- * Decision-gated executors. An actor's contract:
+ * Decision-gated executors. Every actor's contract:
  *   1. Accept a Decision (instanceof + WeakSet-blessed + frozen +
- *      intent-type-correct + structural-vocabulary-valid).
- *   2. On admissible → execute the corresponding action.
- *   3. On requires_review → return abstained outcome (no execution).
+ *      intent-type-correct + structural-vocabulary-valid + actor-
+ *      specific outcome check).
+ *   2. On admissible → execute (response-delivery actor).
+ *   3. On requires_review → durably stage to the review queue
+ *      (GM-23 review-queue actor).
  *   4. On inadmissible → return rejected outcome (no execution).
  *   5. On forged/tampered/mismatched Decision → throw (programmer
- *      error — the caller built the wrong thing).
+ *      error).
  *
- * GM-22 ships ONE actor (OQ-22.2): the response-delivery actor.
- * Future GMs add more actors, each with its own boundary guard
- * and its own intent-type contract.
+ * Two actors today:
+ *   - createResponseDeliveryActor (GM-22) — wraps the conversation
+ *     runtime; admits ONLY decision.intentType === response.deliver.
+ *   - createReviewQueueActor (GM-23) — stages requires_review
+ *     Decisions into governance_review_queue; admits ANY intent
+ *     type as long as decision.decision === requires_review.
  *
- * The conversation runtime is still independently callable in
- * GM-22 (OQ-22.8 — no API break). The actor is the
- * recommended-but-not-mandatory path. A future GM may close that
- * direct-caller seam.
+ * Each actor has its own intent-type contract and its own outcome
+ * routing. They share the OUTCOMES vocabulary (executed / abstained
+ * / rejected / staged).
  */
 
-const { createResponseDeliveryActor, OUTCOMES } = require('./response-delivery-actor');
+const { createResponseDeliveryActor } = require('./response-delivery-actor');
+const { createReviewQueueActor } = require('./review-queue-actor');
+const { OUTCOMES } = require('./outcomes');
 
 module.exports = {
   createResponseDeliveryActor,
+  createReviewQueueActor,
   OUTCOMES,
 };

@@ -60,10 +60,10 @@ per process — `LYLO_RUNTIME_DATABASE_URL`, `LYLO_SETUP_DATABASE_URL`).
 
 | Role | Purpose | Table grants |
 |---|---|---|
-| `lylo_runtime` | Runtime configuration loader (GM-7b) | SELECT on `pilot_instances`, `companion_profile`, `supported_person_profile`, `setup_state` |
-| `lylo_app` | Memory-governance runtime (future GM) | SELECT on all client-scoped tables; INSERT on `memory_store`, `governance_audit_log`, `memory_vault_sessions`; UPDATE (`revoked_at`) on `memory_vault_sessions`; all gated by RLS policies |
-| `lylo_setup` | Offline provisioning script (GM-12) | INSERT/SELECT on the four config tables + `users`; `BYPASSRLS` so it can seed |
-| `lylo_admin` | Operator | SELECT on most tables; **no** policy on `memory_store` or `memory_vaults`, so admins cannot see private memories or vault PIN hashes |
+| `lylo_runtime` | Runtime configuration loader (GM-7b) | SELECT on `pilot_instances`, `companion_profile`, `supported_person_profile`, `setup_state`. **No grant on `governance_review_queue`** (GM-23). |
+| `lylo_app` | Memory-governance runtime + review-queue actor | SELECT on all client-scoped tables; INSERT on `memory_store`, `governance_audit_log`, `memory_vault_sessions`, and (GM-23) `governance_review_queue`; UPDATE (`revoked_at`) on `memory_vault_sessions`; all gated by RLS policies. **No UPDATE or DELETE on `governance_review_queue` — append-only enforced by trigger plus GRANT absence.** |
+| `lylo_setup` | Offline provisioning script (GM-12) | INSERT/SELECT on the four config tables + `users`; `BYPASSRLS` so it can seed. **No grant on `governance_review_queue`** (GM-23 — provisioning has no business reaching the review substrate). |
+| `lylo_admin` | Operator | SELECT on most tables; **no** policy on `memory_store` or `memory_vaults`, so admins cannot see private memories or vault PIN hashes. **SELECT on `governance_review_queue`** (GM-23 — admins are the only role that can see all pending review items in their pilot). |
 
 Defense in depth: the table-level `GRANT` limits *which tables* a role
 can address at all; RLS policies limit *which rows* within those
@@ -134,6 +134,35 @@ admins cannot see `private` or `password_locked` rows.
 
 `INSERT` policy: the connecting user can only insert memories with
 `owning_user_id = app.user_id` (no impersonation).
+
+### `governance_review_queue` (GM-23)
+
+Three SELECT policies (one INSERT policy):
+
+1. **`review_queue_insert_own`** (INSERT WITH CHECK) — tenant
+   match AND `proposer_user_id = current_setting('app.user_id')`.
+   The connecting user can only stage rows for the pilot they
+   declared and as the user they declared (no impersonation, no
+   cross-pilot).
+2. **`review_queue_proposer`** (SELECT) — tenant match AND
+   `proposer_user_id = current_setting('app.user_id')`. A
+   proposer can see only their own staged items.
+3. **`review_queue_admin`** (SELECT) — tenant match AND
+   `current_setting('app.user_role') = 'admin'`. Admins see all
+   pending items in their pilot.
+
+There is **no UPDATE policy** and **no DELETE policy** on
+`governance_review_queue`. The table is append-only enforced
+three ways: the BEFORE-UPDATE-OR-DELETE trigger raises, no
+GRANTs allow UPDATE/DELETE to `lylo_app` (the only writing
+role), and there is no RLS policy that would permit either op
+even if a grant were added.
+
+The `status` column has a locked CHECK (`status =
+'pending_review'`). The DB cannot represent an "approved" or
+"rejected" queue item — the substrate stages only. Status
+transitions, dequeue, approval engines, and human-review tooling
+are out of scope for GM-23.
 
 ### `governance_audit_log`
 
@@ -211,6 +240,7 @@ in either suite fails the build. See `baseline-ci.md`.
 | Provisioning connects as `lylo_setup` via `LYLO_SETUP_DATABASE_URL` | Landed | GM-16 |
 | `rls-engagement` integration test proves RLS is engaged (not silently bypassed) | Landed | GM-16 |
 | Memory-governance module connects as `lylo_app` via `LYLO_APP_DATABASE_URL`; `withMemoryContext` binds `app.pilot_instance_id` / `app.user_id` / `app.user_role` per transaction; audit-bundled read + insert-private surface; dedicated `check-memory-boundary.js` guard; integration matrix proves cross-pilot isolation, family/admin/vault visibility rules, default-deny, audit rollback, cross-user impersonation blocked, and `lylo_app_login` carries no `BYPASSRLS` | Landed | GM-17 |
+| Review-queue substrate: `db/migrations/008_review_queue.sql` adds `governance_review_queue` with CHECK constraints mirroring GM-21 INTENT_TYPES + REASONS, locked `status = 'pending_review'`, BEFORE-UPDATE-OR-DELETE trigger, and the three RLS policies above. `src/review/` library + `src/actors/review-queue-actor.js` connect via the existing `LYLO_APP_DATABASE_URL` (no new env). `withReviewContext` binds the same three session vars. Integration matrix proves cross-pilot isolation, impersonation rejection, proposer/admin/family/caregiver visibility, append-only trigger, runtime/setup role denial | Landed | GM-23 |
 
 As of GM-16 the connection wire-up is complete:
 

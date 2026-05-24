@@ -22,10 +22,11 @@ exception (see "The ajv exception" below).
 | Companion boundary guard | `check-companion-boundary.js` | In `src/companion/` (GM-19): zero SQL keywords (including read keywords like `SELECT`/`FROM`/`JOIN`/`WHERE` — the consumer never has raw SQL); the identifier `insertPrivateMemory` is forbidden; `pg`, model-SDK, and HTTP/server framework (`http`/`https`/`express`/`fastify`/`koa`/`@hapi/hapi`) imports are forbidden; memory-module imports are restricted to the public entry (`../memory` or `../memory/index`) — internal module paths are rejected. See `companion-runtime-boundary.md`. |
 | Conversation boundary guard | `check-conversation-boundary.js` | In `src/conversation/` (GM-20): zero SQL keywords; the identifier `insertPrivateMemory` is forbidden; `pg`, HTTP/server framework, `child_process`, `worker_threads`, `cluster`, and scheduling (`setInterval`/`setImmediate`/`cron`/`schedule`) imports are forbidden; `fs` write API surface (`writeFile`/`appendFile`/`createWriteStream`/`mkdir`/`rm`/`unlink`) is forbidden; the only approved model SDK is `@anthropic-ai/sdk` (every other model SDK is rejected); memory access must go through `../companion` (public entry only) — direct `../memory` imports and `../companion/<deeper>` paths are rejected; streaming identifiers (`.stream(`, `messages.stream`, `stream: true`) and tool-calling identifiers (`tools`/`tool_choice`/`tool_use`/`tool_result`) are forbidden. See `conversation-runtime-boundary.md`. |
 | Governance boundary guard | `check-governance-boundary.js` | In `src/governance/` (GM-21): zero SQL keywords; the identifier `insertPrivateMemory` is forbidden; `pg`, every model SDK (including `@anthropic-ai/sdk` — the governance module is pure-function and calls no model), HTTP/server framework, `child_process`, `worker_threads`, `cluster`, and scheduling (including `setTimeout`) imports / identifiers are forbidden; `fs` write API surface is forbidden; streaming + tool-calling identifiers are forbidden; the module is a LEAF — any import from another `src/` layer (`../memory`/`../companion`/`../conversation`/`../runtime`/`../db`/`../setup`) is rejected. See `governance-runtime-boundary.md`. |
-| Actors boundary guard | `check-actors-boundary.js` | In `src/actors/` (GM-22): zero SQL keywords; the identifier `insertPrivateMemory` is forbidden; `pg`, every model SDK (including `@anthropic-ai/sdk` — the conversation runtime owns that boundary), HTTP/server framework, `child_process`, `worker_threads`, `cluster`, and scheduling (`setInterval`/`setImmediate`/`cron`/`schedule` — `setTimeout` permitted because the conversation runtime uses it transitively) imports / identifiers are forbidden; `fs` write API surface is forbidden; streaming + tool-calling identifiers are forbidden; cross-layer imports of `../runtime`/`../db`/`../setup`/`../memory`/`../companion` are rejected; imports of `../governance` and `../conversation` are restricted to the public entries (no `../governance/<deeper>` or `../conversation/<deeper>` paths). See `actor-runtime-boundary.md`. |
-| RLS / privacy contract | `tests/rls-contract/run-contract.js` + `tests/rls-contract/run-real.test.js` | RLS / privacy contract, two suites run serially in the same CI job: (1) **synthetic** — applies a generic schema, the candidate policies, and two-pilot fixtures to a throwaway Postgres; (2) **real-schema** (GM-15) — applies `db/migrations/0*.sql` (including `007_rls_policies.sql`) and the same fixtures, then runs the matrix against the real schema. Both suites assert the visibility / write matrix (cross-pilot isolation, memory-store rules per visibility level, vault-session row-state model, admin denial on private memories, default-deny). See `rls-privacy-contract.md`. |
+| Actors boundary guard | `check-actors-boundary.js` | In `src/actors/` (GM-22 + GM-23): zero SQL keywords; the identifier `insertPrivateMemory` is forbidden; `pg`, every model SDK (including `@anthropic-ai/sdk` — the conversation runtime owns that boundary), HTTP/server framework, `child_process`, `worker_threads`, `cluster`, and scheduling (`setInterval`/`setImmediate`/`cron`/`schedule` — `setTimeout` permitted because the conversation runtime uses it transitively) imports / identifiers are forbidden; `fs` write API surface is forbidden; streaming + tool-calling identifiers are forbidden; cross-layer imports of `../runtime`/`../db`/`../setup`/`../memory`/`../companion` are rejected; imports of `../governance`, `../conversation`, and (GM-23) `../review` are restricted to the public entries (no `../governance/<deeper>`, `../conversation/<deeper>`, or `../review/<deeper>` paths). See `actor-runtime-boundary.md`. |
+| Review-queue boundary guard | `check-review-boundary.js` | In `src/review/` (GM-23): SQL keywords `UPDATE`/`DELETE`/`DROP`/`ALTER`/`TRUNCATE`/`GRANT`/`REVOKE`/`CREATE` are forbidden (`INSERT` is permitted but tracked separately); every `FROM`/`JOIN` references the review-module read allowlist (`governance_review_queue`, `users`, `pilot_instances`); every `INSERT INTO` references the tighter write allowlist (`governance_review_queue` only); the identifier `insertPrivateMemory` is forbidden; `pg` is imported only by `src/review/client.js`; every model SDK, HTTP/server framework, `child_process`/`worker_threads`/`cluster`, scheduling identifiers, `fs` write API surface, streaming + tool-calling identifiers are forbidden; cross-layer imports of `../runtime`/`../db`/`../setup`/`../memory`/`../companion`/`../conversation`/`../governance`/`../actors` are rejected. See `review-queue-runtime-boundary.md`. |
+| RLS / privacy contract | `tests/rls-contract/run-contract.js` + `tests/rls-contract/run-real.test.js` | RLS / privacy contract, two suites run serially in the same CI job: (1) **synthetic** — applies a generic schema, the candidate policies, and two-pilot fixtures to a throwaway Postgres; (2) **real-schema** (GM-15) — applies `db/migrations/0*.sql` (now including `008_review_queue.sql`) and the same fixtures, then runs the matrix against the real schema. Both suites assert the visibility / write matrix (cross-pilot isolation, memory-store rules per visibility level, vault-session row-state model, admin denial on private memories, default-deny, and — GM-23 — the review-queue insert/proposer/admin policies, impersonation rejection, append-only enforcement). See `rls-privacy-contract.md`. |
 
-All thirteen previous guards plus the RLS / privacy contract are
+All fourteen guards plus the RLS / privacy contract are
 **enforced** — a violation fails the build.
 
 ## Runtime tests
@@ -39,20 +40,25 @@ All thirteen previous guards plus the RLS / privacy contract are
   — the conversation runtime unit suite injects a mocked Anthropic
   SDK client), the governance classifier under `src/governance/`
   (`tests/governance/*.test.js`, GM-21 — pure-function unit tests
-  plus the GM-22 adversarial negative-test suite,
-  `tests/governance/adversarial.test.js`), and the response-delivery
-  actor under `src/actors/` (`tests/actors/*.test.js`, GM-22 —
-  the actor unit suite injects a mocked conversation runtime).
-  It installs dependencies with `npm ci`.
+  plus the GM-22+GM-23 adversarial negative-test suite,
+  `tests/governance/adversarial.test.js`), the actors under
+  `src/actors/` (`tests/actors/*.test.js`, GM-22 + GM-23 — the
+  response-delivery actor injects a mocked conversation runtime;
+  the review-queue actor injects a mocked review pool), and the
+  review-queue substrate library under `src/review/`
+  (`tests/review/*.test.js`, GM-23 — transaction + repository
+  unit tests injecting a mocked pg client). It installs
+  dependencies with `npm ci`.
 - The **`integration-tests`** job boots the runtime against a
   throwaway **Postgres 16 service container** and asserts the runtime
   state and health output for each seed scenario, plus the GM-16
   RLS-engagement, the GM-17 memory-governance, the GM-19
-  companion-read, and the GM-20 conversation-mounted contracts
-  (`tests/integration/*.test.js`). The setup step creates three
-  LOGIN roles (`lylo_runtime_login`, `lylo_setup_login`,
-  `lylo_app_login`) with the per-role `BYPASSRLS` posture documented
-  in `../deployment/operator-runbook.md` §8.
+  companion-read, the GM-20 conversation-mounted, and the GM-23
+  review-queue-substrate contracts (`tests/integration/*.test.js`).
+  The setup step creates three LOGIN roles (`lylo_runtime_login`,
+  `lylo_setup_login`, `lylo_app_login`) with the per-role
+  `BYPASSRLS` posture documented in
+  `../deployment/operator-runbook.md` §8.
 
 A failing test in either job fails the build.
 
@@ -100,6 +106,7 @@ node scripts/ci/check-companion-boundary.js
 node scripts/ci/check-conversation-boundary.js
 node scripts/ci/check-governance-boundary.js
 node scripts/ci/check-actors-boundary.js
+node scripts/ci/check-review-boundary.js
 npm ci && node scripts/ci/check-config-schema.js
 ```
 
@@ -107,6 +114,7 @@ npm ci && node scripts/ci/check-config-schema.js
 
 The `rls-contract` job runs both the synthetic suite (validates the
 policies in isolation) and the real-schema suite (validates the
-policies as applied by `db/migrations/007_rls_policies.sql`). Further
-changes to the policies, the DB-role model, or the schema must keep
-both suites green; see `rls-privacy-contract.md` §"Change control".
+policies as applied by `db/migrations/007_rls_policies.sql` plus
+`008_review_queue.sql`). Further changes to the policies, the
+DB-role model, or the schema must keep both suites green; see
+`rls-privacy-contract.md` §"Change control".

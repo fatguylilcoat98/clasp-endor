@@ -2,7 +2,9 @@
 
 **Applies to:** the actor-runtime module in `src/actors/` — the
 first code outside `src/governance/` that consumes a
-classifier-produced Decision and acts on it. Introduced in GM-22.
+classifier-produced Decision and acts on it. Introduced in GM-22;
+extended in GM-23 to add a second Decision-gated actor (the
+review-queue actor).
 **Status:** locked. Changes go through a reviewed change to this
 file and `scripts/ci/check-actors-boundary.js` in the same PR.
 Adding a new actor (or relaxing the import allowlist) requires a
@@ -10,9 +12,11 @@ paired update to this document.
 **Depends on:** `governance-runtime-boundary.md` (the
 classifier and Decision shape this layer consumes);
 `conversation-runtime-boundary.md` (the only downstream
-capability GM-22's actor wraps); `companion-runtime-boundary.md`
-and `memory-runtime-boundary.md` (orthogonal — GM-22's actor does
-not import either).
+capability GM-22's actor wraps);
+`review-queue-runtime-boundary.md` (the GM-23 substrate the
+review-queue actor stages into); `companion-runtime-boundary.md`
+and `memory-runtime-boundary.md` (orthogonal — neither GM-22's
+nor GM-23's actor imports either).
 
 ## Purpose
 
@@ -50,17 +54,22 @@ src/conversation/ — single-shot model runtime; never imports
                     actors/. (The actor wraps the runtime, not the
                     other way around.)
 src/governance/   — pure classifier (leaf); never imports actors/.
-src/actors/       — NEW (GM-22). First Decision-gated executor.
+src/actors/       — GM-22: first Decision-gated executor
+                    (response-delivery actor wrapping the
+                    conversation runtime). GM-23: second
+                    Decision-gated executor (review-queue actor
+                    wrapping the GM-23 review-queue substrate).
                     Imports `../governance` (public entry only,
-                    for the Decision contract) and
-                    `../conversation` (public entry only, for the
-                    response-delivery action). NO pg, NO model
-                    SDKs (including @anthropic-ai/sdk — that
-                    boundary belongs to the conversation runtime),
-                    NO HTTP frameworks, NO scheduling (other than
-                    transitive setTimeout via the runtime), NO
-                    fs writes, NO subprocesses, NO worker threads.
-                    Guarded by NEW check-actors-boundary.js.
+                    for the Decision contract), `../conversation`
+                    (public entry only — response-delivery actor),
+                    and `../review` (public entry only — review-
+                    queue actor). NO pg, NO model SDKs (including
+                    @anthropic-ai/sdk — that boundary belongs to
+                    the conversation runtime), NO HTTP frameworks,
+                    NO scheduling (other than transitive setTimeout
+                    via the runtime), NO fs writes, NO subprocesses,
+                    NO worker threads. Guarded by
+                    check-actors-boundary.js.
 ```
 
 Future GMs that introduce additional actors (e.g. a memory-
@@ -70,16 +79,18 @@ and may extend the boundary guard's allowed-import list (e.g. to
 permit `../memory` entry imports). Every such extension is a
 deliberate boundary change.
 
-## 2. Public API surface (GM-22)
+## 2. Public API surface (GM-22 + GM-23)
 
 | Export | Purpose |
 |---|---|
-| `createResponseDeliveryActor({conversationRuntime, log?})` | Factory. Returns a frozen actor with exactly one method, `execute(decision, params)`. The caller injects an already-constructed conversation runtime (so the actor is testable with a mocked runtime — no model dependency in unit tests). |
-| `OUTCOMES` | Frozen `{EXECUTED: 'executed', ABSTAINED: 'abstained', REJECTED: 'rejected'}` enum. |
+| `createResponseDeliveryActor({conversationRuntime, log?})` | GM-22. Factory. Returns a frozen actor with exactly one method, `execute(decision, params)`. The caller injects an already-constructed conversation runtime (so the actor is testable with a mocked runtime — no model dependency in unit tests). |
+| `createReviewQueueActor({reviewQueuePool, log?})` | GM-23. Factory. Returns a frozen actor with exactly one method, `execute(decision, params)`. Stages `requires_review` Decisions into `governance_review_queue` via the GM-23 review-queue substrate. |
+| `OUTCOMES` | Frozen `{EXECUTED: 'executed', ABSTAINED: 'abstained', REJECTED: 'rejected', STAGED: 'staged'}` enum. `STAGED` is the GM-23 addition; the four-way set is snapshot-locked in the GM-22 adversarial suite. |
 
 Internal helpers (`verifyDecisionOrThrow`, `validateParams`,
-`isConversationRuntime`) are NOT re-exported through
-`src/actors/index.js`. The returned actor exposes only `execute`.
+`isConversationRuntime`, `isReviewQueuePool`) are NOT re-exported
+through `src/actors/index.js`. Each returned actor exposes only
+`execute`.
 
 ## 3. Decision-verification chain (the central GM-22 contract)
 
@@ -127,6 +138,37 @@ guarantee correct behavior if a future classifier change starts
 returning non-admissible outcomes for `response.deliver`, AND
 they make the contract visible for future actors that handle
 intent types with richer outcome spaces.
+
+### 4a. The review-queue actor (GM-23) — sixth verification layer
+
+The review-queue actor extends the five-layer chain with a
+**sixth, actor-specific** layer:
+
+| # | Check | Catches |
+|---|---|---|
+| 6 | `decision.decision === DECISION_OUTCOMES.REQUIRES_REVIEW` | Staging the wrong kind of Decision. Admissible Decisions belong with the response-delivery actor (or its future siblings); inadmissible Decisions get recorded and dropped by their caller. Only `requires_review` belongs in the queue. |
+
+The intent-type check (layer 4) is also different for the review-
+queue actor. Unlike the response-delivery actor, which locks
+`decision.intentType` to `RESPONSE_DELIVER`, the review-queue
+actor accepts **any** value from `INTENT_TYPES` — any intent
+type can in principle be classified `requires_review`, and the
+queue stages all of them.
+
+Outcome routing for the review-queue actor:
+
+| `decision.decision` | Action | Outcome shape |
+|---|---|---|
+| `requires_review` (only) | One INSERT into `governance_review_queue` via `withReviewContext` | `{outcome: 'staged', decision, queueEntryId, createdAt}` |
+| `admissible` | THROW (layer 6 rejects — does not call the substrate) | — |
+| `inadmissible` | THROW (layer 6 rejects — does not call the substrate) | — |
+
+The substrate's RLS policies (`tenant + no-impersonation`) are
+the **outer** correctness gate. The actor's verification is
+defense-in-depth for upstream callers; the database refuses
+forged inserts even if the actor were bypassed entirely. See
+`review-queue-runtime-boundary.md` for the full substrate
+contract.
 
 ## 5. The conversation runtime is unchanged
 
@@ -180,8 +222,8 @@ and fails the build on:
 | Import of any model SDK (`@anthropic-ai/sdk`, `openai`, `@openai/*`, etc.) | The conversation runtime owns the SDK boundary; the actor is one layer up. |
 | Import of `http`/`https`/`express`/`fastify`/`koa`/`@hapi/hapi` | No HTTP. |
 | Import of `child_process`/`worker_threads`/`cluster` (or their `node:` forms) | No subprocess, no worker thread. |
-| Import of `../runtime`/`../db`/`../setup`/`../memory`/`../companion` (or subpaths) | Cross-layer reach is forbidden in GM-22's actor; future actors that need a particular layer will get a paired guard update. |
-| Imports of `../governance/<deeper>` or `../conversation/<deeper>` | Only the public entries (`../governance`, `../governance/index`, `../conversation`, `../conversation/index`) are permitted. |
+| Import of `../runtime`/`../db`/`../setup`/`../memory`/`../companion` (or subpaths) | Cross-layer reach is forbidden in GM-22 + GM-23 actors; future actors that need a particular layer will get a paired guard update. |
+| Imports of `../governance/<deeper>`, `../conversation/<deeper>`, or `../review/<deeper>` | Only the public entries (`../governance`, `../governance/index`, `../conversation`, `../conversation/index`, `../review`, `../review/index`) are permitted. The `../review` entry was added in GM-23 (paired guard change with `check-actors-boundary.js`). |
 | Scheduling identifiers (`setInterval`, `setImmediate`, `cron`, `schedule`) | No background work. `setTimeout` is permitted because it may appear transitively via the conversation runtime; GM-22's actor code does not call it directly. |
 | Streaming / tool-calling identifiers (`.stream(`, `messages.stream`, `stream: true`, `tools`, `tool_choice`, `tool_use`, `tool_result`) | Defense in depth; the underlying conversation runtime already bans these. |
 | `fs.writeFile*` / `appendFile*` / `createWriteStream` / `mkdir*` / `rm*` / `unlink*` | No filesystem writes. |
@@ -208,6 +250,12 @@ The current suite covers:
   non-object decision arguments rejected; classifier-produced
   Decisions are reusable (stateless actor); runtime errors
   surface cleanly without altering the Decision.
+- **E. GM-23 review-queue actor verification** — duck-typed
+  objects rejected; prototype-tampered forgeries rejected by the
+  WeakSet check; admissible / inadmissible Decisions rejected by
+  layer 6; cross-tenant impersonation rejected by RLS WITH CHECK
+  in the integration suite; sentinel payload/evidence content
+  never appears in actor or repository log lines (E1–E10).
 - **C. EVENT_TYPES + REASONS + INTENT_TYPES snapshots** — the
   GM-18 audit vocabulary, the GM-21 REASONS vocabulary, and the
   GM-21 intent taxonomy are snapshot-locked. Any addition or
@@ -237,7 +285,10 @@ the contract they introduce.
 | Actor calls a model SDK | Boundary guard bans every model SDK by name. The actor calls `conversationRuntime.respond`, which is a method on an injected client; the actor never imports the SDK. |
 | Actor introduces new audit `EVENT_TYPES` | None added in GM-22. Adversarial test C1 snapshots and asserts the lock holds. |
 | Actor adds new endpoints / mounts to boot | Boundary guard bans HTTP frameworks. `src/runtime/boot.js` does not import `src/actors/`. |
-| Actor logs response text / user message / memory content | Sentinel-scan unit test (`tests/actors/response-delivery-actor.test.js`) plants secrets in both the user message and the model response and asserts neither appears in any captured log line. |
+| Actor logs response text / user message / memory content | Sentinel-scan unit test (`tests/actors/response-delivery-actor.test.js`) plants secrets in both the user message and the model response and asserts neither appears in any captured log line. The review-queue actor has its own sentinel scan (`tests/actors/review-queue-actor.test.js`) covering `payload_summary` and `evidence_summary`. |
+| Review-queue actor stages a non-requires_review Decision | Layer 6 check (`decision.decision === REQUIRES_REVIEW`). Adversarial tests E2 / E3 plant admissible and inadmissible Decisions and assert rejection BEFORE any pool call. |
+| Review-queue actor inserts under a forged tenant or impersonated proposer | The actor passes `proposer_user_id` from the session context, not from input. `withReviewContext` sets `app.user_id` via `set_config`, and the RLS `review_queue_insert_own` WITH CHECK enforces both tenant and proposer match. Adversarial E5 + integration suite plant the attack. |
+| Review-queue actor mutates an existing queue row | No UPDATE / DELETE grants to `lylo_app`; the `governance_review_queue` BEFORE-UPDATE-OR-DELETE trigger raises on any attempt. Integration suite asserts. |
 
 ## 10. Enforcement summary
 
@@ -266,15 +317,18 @@ AND the adversarial snapshot.
 
 - `governance-runtime-boundary.md` — the classifier and Decision
   shape this layer consumes.
-- `conversation-runtime-boundary.md` — the only downstream
-  capability GM-22's actor wraps.
+- `conversation-runtime-boundary.md` — the downstream capability
+  GM-22's response-delivery actor wraps.
+- `review-queue-runtime-boundary.md` — the GM-23 substrate the
+  review-queue actor stages into.
 - `companion-runtime-boundary.md`, `memory-runtime-boundary.md`,
-  `runtime-boundary.md` — orthogonal layers GM-22's actor does
-  not import.
+  `runtime-boundary.md` — orthogonal layers neither actor imports.
 - `baseline-ci.md` — the CI guard set.
 - `../../scripts/ci/check-actors-boundary.js` — the guard.
 - `../../src/actors/` — the module.
 - `../../tests/actors/response-delivery-actor.test.js` — the
+  GM-22 positive contract tests.
+- `../../tests/actors/review-queue-actor.test.js` — the GM-23
   positive contract tests.
 - `../../tests/governance/adversarial.test.js` — the negative
-  contract tests (the new gauntlet contribution).
+  contract tests (A–E series).

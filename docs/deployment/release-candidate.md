@@ -78,7 +78,7 @@ runs both against a Postgres 16 service container.
 
 ## CI enforcement
 
-Sixteen baseline CI jobs gate every PR:
+Seventeen baseline CI jobs gate every PR:
 
 - Six stdlib-only structural guards (format, migration discipline,
   secrets, no-real-data, no-archived-SQL, contamination).
@@ -111,29 +111,45 @@ Sixteen baseline CI jobs gate every PR:
   every model SDK including `@anthropic-ai/sdk` is forbidden;
   scheduling (including `setTimeout`) and all `fs` write API are
   forbidden; the classifier is sync, stateless, side-effect-free.
-- The **actors boundary guard** (GM-22) — scopes `src/actors/`;
+- The **actors boundary guard** (GM-22 + GM-23) — scopes `src/actors/`;
   zero SQL keywords; bans `pg`, every model SDK (incl. `@anthropic-ai/sdk`),
   HTTP/server frameworks, `child_process`/`worker_threads`/`cluster`,
   `setInterval`/`setImmediate`/`cron`/`schedule`, all `fs` write API,
   streaming + tool-calling identifiers; rejects cross-layer imports of
   `../runtime`/`../db`/`../setup`/`../memory`/`../companion`; restricts
-  `../governance` and `../conversation` imports to their public entries.
+  `../governance`, `../conversation`, and `../review` imports to their
+  public entries.
+- The **review-queue boundary guard** (GM-23) — scopes `src/review/`;
+  bans `UPDATE`/`DELETE`/`DROP`/`ALTER`/`TRUNCATE`/`GRANT`/`REVOKE`/`CREATE`
+  (`INSERT` is permitted but tracked); FROM/JOIN allowlist limited to
+  `governance_review_queue` + `users` + `pilot_instances`; INSERT INTO
+  allowlist limited to `governance_review_queue`; `pg` import scoped
+  to `src/review/client.js`; every model SDK, HTTP framework,
+  `child_process`/`worker_threads`/`cluster`, scheduling identifiers,
+  `fs` write API, streaming + tool-calling identifiers, and the
+  `insertPrivateMemory` identifier are forbidden; cross-layer imports
+  of `../runtime`/`../db`/`../setup`/`../memory`/`../companion`/`../conversation`/`../governance`/`../actors`
+  are rejected.
 - The **configuration contract** (`ajv` against
   `companion.schema.json`; positive no-leak fixtures).
 - Runtime + memory + companion + conversation + governance + actors
-  **unit tests** (`node:test`, `tests/runtime/*.test.js` +
+  + review **unit tests** (`node:test`, `tests/runtime/*.test.js` +
   `tests/memory/*.test.js` + `tests/companion/*.test.js` +
   `tests/conversation/*.test.js` + `tests/governance/*.test.js` —
-  including the GM-22 adversarial negative-test suite at
-  `tests/governance/adversarial.test.js` + `tests/actors/*.test.js`).
+  including the GM-22 + GM-23 adversarial negative-test suite at
+  `tests/governance/adversarial.test.js` + `tests/actors/*.test.js`
+  + `tests/review/*.test.js`).
 - **Integration tests** (Postgres 16 service container,
   `--test-concurrency=1`) — boot scenarios, provisioning, GM-16
   RLS engagement, the GM-17 memory-governance matrix, the GM-19
-  companion-read matrix, and the GM-20 conversation-mounted matrix
+  companion-read matrix, the GM-20 conversation-mounted matrix
   (the latter injects a mocked Anthropic SDK and asserts exactly
-  one model call per `respond()`). GM-21 and GM-22 add no integration
-  test — both the classifier and the actor are pure / unit-tested
-  with mocked dependencies, no DB or model dependency.
+  one model call per `respond()`), and the GM-23 review-queue
+  matrix (proves cross-pilot/impersonation rejection, append-only
+  trigger, role-grant denial, proposer/admin visibility). GM-21
+  and GM-22 add no integration test — both the classifier and the
+  response-delivery actor are pure / unit-tested with mocked
+  dependencies, no DB or model dependency.
 - The **RLS / privacy contract** job runs both the synthetic suite
   (`run-contract.js`) and the real-schema suite (`run-real.test.js`)
   serially against a Postgres 16 service container.
@@ -160,6 +176,7 @@ Sixteen baseline CI jobs gate every PR:
 | First mounted conversational runtime (GM-20) | Landed as a library (`src/conversation/`); not mounted by boot. `createConversationRuntime({companionReader, modelClient, log?, config?})` returns a frozen runtime with `respond()` only; consumes `src/companion` (public entry); first new dependency since GM-0 (`@anthropic-ai/sdk`, pinned `0.98.0`); strictly single-shot, non-streaming, no tool/function calling, no retries inside the runtime, no transcript persistence, no automatic memory creation; dedicated `check-conversation-boundary.js` guard mechanically forbids streaming, tool calling, scheduling, fs writes, HTTP frameworks, process spawning, and every model SDK other than `@anthropic-ai/sdk`; locked configuration defaults (`claude-sonnet-4-6` / `maxTokens=1024` / `temperature=0.3` / `MAX_USER_MESSAGE_BYTES=8192` / `defaultMemoryLimit=20`); deterministic exported `buildPrompt` wraps each memory row in `<<MEMORY id=… provenance=… visibility=… admissibility=…>>…<</MEMORY>>` envelopes; integration matrix (with mocked SDK) proves visibility-rule parity, cross-pilot isolation, no-write invariant, exactly-one `memory.list` audit row per `respond()`, exactly-one SDK call per `respond()`, no streaming/tool-calling fields in the SDK request, `MemoryRepositoryError` propagation; unit-suite sentinel scan proves memory content, user message, and model response never appear in captured logs | `governance/conversation-runtime-boundary.md`, `tests/integration/conversation-mounted.test.js` |
 | Execution-decision classifier (GM-21) | Landed as a pure-function library (`src/governance/`); not mounted by boot. `classifyExecutionIntent({type, payload?, evidence?})` returns a frozen, opaque `Decision { intentType, decision, reason, policyRef }` that future actor modules will require by `instanceof`-check. Locked closed taxonomy: `response.deliver` (admissible), `memory.candidate.create` (per provenance — VERIFIED_FACT inadmissible, AI_INFERRED/USER_STATED requires_review), `memory.visibility.promote`/`memory.retract`/`memory.supersede`/`vault.session.open`/`vault.session.revoke`/`external.side_effect` (all inadmissible in GM-21). Default-deny on unknown intent types and malformed inputs — classifier never throws. Dedicated `check-governance-boundary.js` guard makes the module a leaf: no `pg`, no model SDK (including `@anthropic-ai/sdk`), no HTTP, no `setTimeout`/`setInterval`/scheduling, no fs writes, no cross-layer imports. No persistence; no new `EVENT_TYPES`; no boot mount; mechanically enforces a subset of `source-of-truth-memory-policy.md` (§2/§3/§4/§5/§6/§7/§12/§13). | `governance/governance-runtime-boundary.md`, `tests/governance/classifier.test.js` |
 | First Decision-gated actor + adversarial review (GM-22) | Landed as a library (`src/actors/`); not mounted by boot. `createResponseDeliveryActor({conversationRuntime, log?})` returns a frozen actor with `execute(decision, params)`. Five-layer Decision verification: `instanceof Decision` + `isValidDecision` (WeakSet membership — closes prototype-tampering gap) + `Object.isFrozen` + intent-type confusion check + structural-vocabulary revalidation. Verified-but-not-admissible Decisions route to `{outcome: 'abstained' \| 'rejected', decision}`; forged or tampered Decisions throw. The conversation runtime is called exactly once on admissible paths and zero times otherwise. The GM-21 governance module is extended minimally: `_BLESSED` WeakSet inside `decisions.js` and a new `isValidDecision` export from `src/governance/index.js`. New `check-actors-boundary.js` guard; new `tests/governance/adversarial.test.js` (the project's first NEGATIVE test suite — every assertion is "this must NOT work"). EVENT_TYPES + REASONS + INTENT_TYPES snapshot tests assert no vocabulary drift. No new persistence, no new `EVENT_TYPES`, no new RLS, no boot mount, no new dependencies. | `governance/actor-runtime-boundary.md`, `tests/actors/response-delivery-actor.test.js`, `tests/governance/adversarial.test.js` |
+| Review-queue substrate (GM-23) | Landed as a library (`src/review/`) + a second actor (`src/actors/review-queue-actor.js`); not mounted by boot. `db/migrations/008_review_queue.sql` adds `governance_review_queue` with CHECK constraints mirroring GM-21 INTENT_TYPES + REASONS, locked `status = 'pending_review'`, BEFORE-UPDATE-OR-DELETE trigger, and three RLS policies (insert_own / proposer SELECT / admin SELECT). `lylo_app` gets SELECT + INSERT only — no UPDATE/DELETE grants; `lylo_admin` gets SELECT; `lylo_runtime` and `lylo_setup` have no grants. `createReviewQueueActor({reviewQueuePool, log?})` inherits the GM-22 five-layer Decision verification chain and adds a sixth, actor-specific check: `decision.decision === DECISION_OUTCOMES.REQUIRES_REVIEW`. Only `requires_review` Decisions can stage; admissible / inadmissible Decisions throw. The actor returns `{outcome: 'staged', decision, queueEntryId, createdAt}` (the new `STAGED` value in the actor `OUTCOMES` enum). New `check-review-boundary.js` guard scopes `src/review/`; SQL-keyword bans, model-SDK bans, scheduling bans, fs-write bans, cross-layer-import bans. New `tests/integration/review-queue.test.js` proves the end-to-end matrix; the synthetic RLS contract suite (`run-contract.js`) and the real-schema suite (`run-real.test.js`) are extended with the review-queue scenarios. Adversarial suite extended with E-series probes. No dequeue path, no approval engine, no status transitions, no auto-action, no notifications, no boot mount, no new env, no new dependencies, no `EVENT_TYPES` widening. | `governance/review-queue-runtime-boundary.md`, `db/migrations/008_review_queue.sql`, `tests/integration/review-queue.test.js`, `tests/actors/review-queue-actor.test.js`, `tests/governance/adversarial.test.js` |
 
 ## What is explicitly deferred
 
@@ -216,11 +233,22 @@ scenario integration matrix proving cross-pilot isolation,
 family/admin/vault visibility rules, audit atomicity, and
 `lylo_app_login` posture (no `BYPASSRLS`).
 
+GM-23 adds the **review-queue substrate**: the first time a
+`requires_review` Decision can be durably staged for later human
+review. Library-only; no dequeue path, no approval engine, no
+status transitions, no boot mount; the substrate and the review-
+queue actor together mechanically prove that "you cannot persist
+a review item without a valid `requires_review` Decision". No
+external readiness claim — the substrate is a **building block**
+for future human-review tooling, not an active workflow.
+
 The next dangerous step is the **additional memory-governance ops**
 that need new grants or policies: visibility promotion,
 admissibility transitions, retraction, supersession, and vault PIN
 verification + session opening. Each is gated on its own owner
-decision.
+decision. **Beyond** that lies the equally-gated build-out of the
+review-queue lifecycle (dequeue, approval, status transitions,
+human-review surface).
 
 ## Cross-references
 

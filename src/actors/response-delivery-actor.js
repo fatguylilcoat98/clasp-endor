@@ -67,6 +67,7 @@ const {
   DECISION_OUTCOMES,
   INTENT_TYPES,
 } = require('../governance');
+const { OUTCOMES } = require('./outcomes');
 
 // Build the validation sets from the public vocabularies. The
 // governance module's ALL_* internal collections are not part of
@@ -74,12 +75,6 @@ const {
 // with what src/governance/index.js exports.
 const VALID_REASONS = new Set(Object.values(REASONS));
 const VALID_OUTCOMES = new Set(Object.values(DECISION_OUTCOMES));
-
-const OUTCOMES = Object.freeze({
-  EXECUTED:  'executed',
-  ABSTAINED: 'abstained',
-  REJECTED:  'rejected',
-});
 
 function isConversationRuntime(runtime) {
   return (

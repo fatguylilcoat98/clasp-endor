@@ -55,9 +55,11 @@ GRANT SELECT ON pilot_instances, companion_profile, supported_person_profile, se
 
 GRANT SELECT ON pilot_instances, users, companion_profile, supported_person_profile,
                 circle_contacts, memory_vaults, memory_vault_sessions, memory_store,
-                governance_audit_log
+                governance_audit_log, governance_review_queue
   TO lylo_app;
-GRANT INSERT ON memory_store, governance_audit_log, memory_vault_sessions TO lylo_app;
+GRANT INSERT ON memory_store, governance_audit_log, memory_vault_sessions,
+                governance_review_queue
+  TO lylo_app;
 GRANT UPDATE (revoked_at) ON memory_vault_sessions TO lylo_app;
 
 GRANT INSERT, SELECT ON pilot_instances, users, companion_profile,
@@ -66,7 +68,7 @@ GRANT INSERT, SELECT ON pilot_instances, users, companion_profile,
 
 GRANT SELECT ON pilot_instances, users, companion_profile, supported_person_profile,
                 circle_contacts, memory_vaults, memory_vault_sessions,
-                governance_audit_log, setup_state
+                governance_audit_log, setup_state, governance_review_queue
   TO lylo_admin;
 
 -- ---------------------------------------------------------------------
@@ -84,6 +86,7 @@ ALTER TABLE memory_vault_sessions     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memory_store              ENABLE ROW LEVEL SECURITY;
 ALTER TABLE governance_audit_log      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE setup_state               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE governance_review_queue   ENABLE ROW LEVEL SECURITY;
 
 -- ---------------------------------------------------------------------
 -- Tenant-scoped SELECT policies.
@@ -215,4 +218,30 @@ CREATE POLICY governance_audit_log_insert ON governance_audit_log FOR INSERT
   WITH CHECK (
     pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
     AND actor_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
+  );
+
+-- ---------------------------------------------------------------------
+-- governance_review_queue (GM-23): the durable staging substrate for
+-- requires_review Decisions. Proposer sees own rows; admin sees all
+-- in pilot. INSERT is tenant-scoped AND no-impersonation. No UPDATE
+-- or DELETE policies exist (no grants either; the append-only trigger
+-- in the real schema is the additional backstop).
+-- ---------------------------------------------------------------------
+
+CREATE POLICY review_queue_insert_own ON governance_review_queue FOR INSERT
+  WITH CHECK (
+    pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
+    AND proposer_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
+  );
+
+CREATE POLICY review_queue_proposer ON governance_review_queue FOR SELECT
+  USING (
+    pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
+    AND proposer_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
+  );
+
+CREATE POLICY review_queue_admin ON governance_review_queue FOR SELECT
+  USING (
+    pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
+    AND current_setting('app.user_role', true) = 'admin'
   );
