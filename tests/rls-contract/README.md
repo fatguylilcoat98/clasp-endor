@@ -1,10 +1,19 @@
 # RLS / privacy contract suite
 
-The synthetic RLS / privacy contract: a generic Postgres schema,
-candidate row-level-security policies, fixtures across two pilots, and
-a test matrix that asserts the access / visibility rules. Run by the
-`rls-contract` baseline-CI job against a throwaway Postgres 16 service
-container.
+The RLS / privacy contract is exercised by two suites that share the
+same matrix, fixtures, and identifiers:
+
+- **Synthetic** (`run-contract.js`) — applies a generic schema, the
+  candidate policies, and two-pilot fixtures to a throwaway Postgres,
+  then asserts the access / visibility / write rules.
+- **Real schema** (`run-real.test.js`, GM-15) — applies the real
+  `db/migrations/0*.sql` chain (including
+  `db/migrations/007_rls_policies.sql`), then runs the same matrix
+  against the real schema. Catches drift between the policy contract
+  and the production migrations.
+
+Both suites are run by the single `rls-contract` baseline-CI job,
+serially, against a throwaway Postgres 16 service container.
 
 The full contract is documented in
 `../../docs/governance/rls-privacy-contract.md`.
@@ -14,9 +23,10 @@ The full contract is documented in
 | File | Purpose |
 |---|---|
 | `synthetic-schema.sql` | A minimal, structurally equivalent copy of the real `db/migrations/` shape, without the application-level invariant triggers. Fictional only. |
-| `policies.sql` | The candidate RLS policies and DB-role model that GM-15 will apply to the real schema. |
-| `fixtures.sql` | Two-pilot seed data: seniors, family, caregiver, admin, vaults with open and revoked sessions, memories at each visibility level, audit entries. |
-| `run-contract.js` | `node:test` matrix runner — drops and recreates the public schema, applies the three SQL files in order, then asserts the visibility / write matrix from each role's perspective. |
+| `policies.sql` | The candidate RLS policies and DB-role model — the contract's machine-readable specification, applied to the synthetic schema. Kept byte-for-byte semantically equivalent to `../../db/migrations/007_rls_policies.sql`. |
+| `fixtures.sql` | Two-pilot seed data: seniors, family, caregiver, admin, vaults with open and revoked sessions, memories at each visibility level, audit entries. Shared by both suites; the real schema's additional columns take their defaults. |
+| `run-contract.js` | `node:test` matrix runner for the synthetic schema. Drops and recreates the public schema, applies the three SQL files in order, then asserts the matrix from each role's perspective. |
+| `run-real.test.js` | `node:test` matrix runner for the real schema. Drops and recreates the public schema, applies `db/migrations/0*.sql` in order (including `007_rls_policies.sql`), seeds `fixtures.sql`, then asserts the same matrix against the real tables. |
 
 ## What the contract proves
 
@@ -44,21 +54,25 @@ The suite verifies the access rules every PR:
 
 ## What the contract does **not** prove
 
-- The real `db/migrations/` schema does **not** have RLS enabled — that
-  is GM-15's atomic migration.
-- The runtime modules (`src/runtime/`, `src/db/`) do not yet `SET LOCAL
-  app.user_id` etc. — GM-15 wires the loader to set session variables
-  per request.
+- The runtime modules (`src/runtime/`, `src/db/`) do not yet connect
+  as `lylo_runtime` or `SET LOCAL app.*` per request — that is GM-16's
+  wire-up. After GM-15 the policies exist on the real schema but are
+  dormant for the connecting application (which still uses the
+  bootstrap `DATABASE_URL`, typically a superuser that bypasses RLS).
 - Application-level invariants (memory immutability, audit append-only
   triggers) are not modelled here; they are in the real migrations and
   validated by integration tests.
 
 ## Running locally
 
+Run both suites serially (matches CI):
+
 ```sh
 DATABASE_URL='postgres://USER:PASSWORD@HOST:5432/DB' \
-node --test tests/rls-contract/run-contract.js
+node --test --test-concurrency=1 \
+  tests/rls-contract/run-contract.js \
+  tests/rls-contract/run-real.test.js
 ```
 
-The runner drops and recreates the public schema. **Never point it at
-a real instance database.**
+Each runner drops and recreates the public schema in its `before`
+hook. **Never point them at a real instance database.**

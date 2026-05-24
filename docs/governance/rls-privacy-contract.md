@@ -1,11 +1,15 @@
 # RLS / Privacy Contract
 
-**Applies to:** the candidate row-level-security policies that GM-15
-will apply to the real `db/migrations/` schema. Today they are
-mechanically validated against a synthetic schema; the real schema is
-unchanged.
-**Status:** locked. Changes go through a reviewed change to this file
-and `tests/rls-contract/policies.sql` together.
+**Applies to:** the row-level-security policies on the real
+`db/migrations/` schema. As of GM-15 they live in
+`db/migrations/007_rls_policies.sql`; they are mechanically validated
+in CI against both the synthetic schema (`run-contract.js`) and the
+real migrations (`run-real.test.js`). RLS is **dormant in production**
+until GM-16 wires the runtime / provisioning to connect via the
+`lylo_*` roles — see "Runtime wire-up status" below.
+**Status:** locked. Changes go through a reviewed change to this file,
+`tests/rls-contract/policies.sql`, and `db/migrations/007_rls_policies.sql`
+together.
 **Depends on:** `source-of-truth-memory-policy.md` (the policy this
 contract enforces), `runtime-boundary.md` (the runtime stays
 read-only), `companion-config-contract.md` (the four config tables the
@@ -23,9 +27,13 @@ a session-variable convention, a DB-role model, and a CI-enforced
 test matrix that exercises the access rules across roles, pilots,
 visibility levels, and vault-session states.
 
-The contract is **synthetic** in this PR — applied to a separate
-schema, not to the real migrations. GM-15 will apply the same policies
-to the real schema atomically.
+As of GM-15, the contract is applied to the real schema by
+`db/migrations/007_rls_policies.sql` and re-verified against the real
+migrations on every PR by `tests/rls-contract/run-real.test.js`. The
+synthetic suite (`run-contract.js`) remains: it is the contract's
+machine-readable specification, useful for reviewing policy changes in
+isolation from the application schema. Both suites run in the single
+`rls-contract` CI job.
 
 ## Session-variable convention
 
@@ -44,24 +52,46 @@ check yields `NULL` and the row is filtered out — default-deny.
 
 ## DB-role model
 
-GM-15 creates the following Postgres roles in the cluster. They are
-all `NOLOGIN` — the connecting application uses one of them via
-`SET ROLE` after authenticating with a service login role.
+GM-15's `db/migrations/007_rls_policies.sql` creates the following
+Postgres roles in the cluster. They are all `NOLOGIN`; GM-16 will
+introduce the LOGIN role(s) the connecting application uses to acquire
+them (decision OQ-15.5: separate LOGIN role + separate `DATABASE_URL`
+per process — `LYLO_RUNTIME_DATABASE_URL`, `LYLO_SETUP_DATABASE_URL`).
 
 | Role | Purpose | Table grants |
 |---|---|---|
 | `lylo_runtime` | Runtime configuration loader (GM-7b) | SELECT on `pilot_instances`, `companion_profile`, `supported_person_profile`, `setup_state` |
-| `lylo_app` | Memory-governance runtime (future GM) | SELECT/INSERT on memory tables, gated by RLS policies |
-| `lylo_setup` | Offline provisioning script (GM-12) | INSERT/SELECT on the four config tables; `BYPASSRLS` so it can seed |
+| `lylo_app` | Memory-governance runtime (future GM) | SELECT on all client-scoped tables; INSERT on `memory_store`, `governance_audit_log`, `memory_vault_sessions`; UPDATE (`revoked_at`) on `memory_vault_sessions`; all gated by RLS policies |
+| `lylo_setup` | Offline provisioning script (GM-12) | INSERT/SELECT on the four config tables + `users`; `BYPASSRLS` so it can seed |
 | `lylo_admin` | Operator | SELECT on most tables; **no** policy on `memory_store` or `memory_vaults`, so admins cannot see private memories or vault PIN hashes |
 
 Defense in depth: the table-level `GRANT` limits *which tables* a role
 can address at all; RLS policies limit *which rows* within those
 tables.
 
+### Bootstrap policy for `lylo_runtime` on `pilot_instances`
+
+Per OQ-15.2, the GM-15 migration installs a role-scoped policy
+`pilot_instances_runtime_bootstrap ON pilot_instances FOR SELECT TO
+lylo_runtime USING (true)`. This is intentional: GM-16's env-first
+boot model sets `app.pilot_instance_id` before any query, so the
+tenant-scope policy already permits the read; the bootstrap policy
+fails closed only if env is misconfigured (the runtime sees all pilots
+instead of zero). Safe under single-tenant — each runtime owns one
+`DATABASE_URL` pointing at one pilot. `lylo_app` and `lylo_admin` are
+NOT covered by the bootstrap policy and remain bound by the
+tenant-scope rule on `pilot_instances`.
+
 ## Per-table policies
 
-The full, runnable form lives in `../../tests/rls-contract/policies.sql`.
+The runnable forms live in two places, byte-for-byte semantically
+equivalent:
+
+- `../../db/migrations/007_rls_policies.sql` — applied to the real
+  schema.
+- `../../tests/rls-contract/policies.sql` — applied to the synthetic
+  schema by the contract suite.
+
 The semantic summary:
 
 ### Tenant-scoped SELECT (every client-scoped table)
@@ -164,36 +194,58 @@ The contract does **not** model:
 
 ## CI enforcement
 
-The `rls-contract` baseline-CI job runs the matrix on every PR. It is
-no longer a scaffold; a failure fails the build. See
-`baseline-ci.md`.
+The `rls-contract` baseline-CI job runs the matrix on every PR against
+both the synthetic schema (`run-contract.js`) and the real
+migrations (`run-real.test.js`). It is no longer a scaffold; a failure
+in either suite fails the build. See `baseline-ci.md`.
 
-## Promotion to the real schema (GM-15)
+## Runtime wire-up status
 
-GM-15 will:
+| Step | Status | PR |
+|---|---|---|
+| Synthetic contract validates policies | Landed | GM-14 |
+| Real-schema migration installs roles, GRANTs, RLS, policies | Landed | GM-15 |
+| Real-schema contract suite runs on every PR | Landed | GM-15 |
+| Runtime connects as `lylo_runtime` via `LYLO_RUNTIME_DATABASE_URL` | Deferred | GM-16 |
+| Loader sets `app.pilot_instance_id` (env-first, OQ-15.2) | Deferred | GM-16 |
+| Provisioning connects as `lylo_setup` via `LYLO_SETUP_DATABASE_URL` | Deferred | GM-16 |
 
-1. Add a single new migration (`db/migrations/007_rls_policies.sql`)
-   that `CREATE ROLE`s `lylo_runtime` / `lylo_app` / `lylo_setup` /
-   `lylo_admin`, issues the matching `GRANT`s, `ENABLE`s RLS on the ten
-   client-scoped tables, and applies the policies from this contract.
+As of GM-15, `db/migrations/007_rls_policies.sql` creates the four
+`lylo_*` roles, applies the policies, and enables RLS on the ten
+client-scoped tables. **But the runtime and provisioning scripts still
+connect with the operator's `DATABASE_URL`**, typically a bootstrap
+superuser that has `BYPASSRLS` by default. RLS therefore exists on the
+schema but is dormant for the connecting application until GM-16
+flips the connection role.
+
+GM-16 (separate PR, separate decision gate) will:
+
+1. Introduce `LYLO_RUNTIME_DATABASE_URL` and `LYLO_SETUP_DATABASE_URL`
+   in `parseEnv`. Operator provisions LOGIN roles whose effective
+   identity is `lylo_runtime` / `lylo_setup`.
 2. Update `src/runtime/boot.js` and `src/db/client.js` so the runtime
-   connects as `lylo_runtime` and `SET LOCAL app.pilot_instance_id` on
-   the loader's transaction.
-3. Update `scripts/setup/provision-instance.js` so the provisioning
-   script connects as `lylo_setup` (BYPASSRLS for seeding).
-4. Re-run the contract suite **against the real schema** as a final
-   gate (same `run-contract.js`, but pointed at the real migrations
-   path).
+   reads `LYLO_RUNTIME_DATABASE_URL` and `SET LOCAL
+   app.pilot_instance_id` from `LYLO_PILOT_INSTANCE_ID` (env-first)
+   on every loader transaction. The `lylo_runtime` bootstrap policy
+   on `pilot_instances` provides belt-and-suspenders coverage if env
+   is misconfigured.
+3. Update `scripts/setup/provision-instance.js` to read
+   `LYLO_SETUP_DATABASE_URL`. `lylo_setup` has `BYPASSRLS` for seeding.
+4. Add an integration test that boots under `lylo_runtime` and
+   asserts the loader's read-only contract still holds.
 
-Until GM-15 lands, the real schema remains RLS-free; the runtime relies
-on single-tenant physical isolation and the runtime-boundary guard.
+Until GM-16 lands, the runtime relies on single-tenant physical
+isolation, the runtime-boundary guard, and the GM-15 migration sitting
+ready in production but not yet engaged by the application.
 
 ## Change control
 
 Locked. Any change to a policy or to the DB-role model is a reviewed
-change to **this document** and **`policies.sql`** together in the
-same PR. Adding a new table to `db/migrations/` requires adding a
-corresponding policy here in the same PR.
+change to **this document**, **`tests/rls-contract/policies.sql`**,
+and **`db/migrations/007_rls_policies.sql`** together in the same PR.
+Adding a new table to `db/migrations/` requires adding a corresponding
+policy here, in the synthetic `policies.sql`, and in `007` (or a
+follow-on numbered migration) in the same PR.
 
 ## Cross-references
 
@@ -204,4 +256,7 @@ corresponding policy here in the same PR.
   tables.
 - `companion-config-contract.md` — the four config tables.
 - `baseline-ci.md` — the `rls-contract` job.
-- `../../tests/rls-contract/policies.sql` — the runnable contract.
+- `../../tests/rls-contract/policies.sql` — the synthetic-schema form.
+- `../../tests/rls-contract/run-real.test.js` — the real-schema proof.
+- `../../db/migrations/007_rls_policies.sql` — the real-schema
+  application.

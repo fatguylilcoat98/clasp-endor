@@ -170,7 +170,9 @@ jobs:
           node-version: '20'
       - name: Install dependencies
         run: npm ci
-      - name: Run RLS contract suite
+      - name: Run RLS contract suite (synthetic + real schema)
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/lylo_rls
-        run: node --test tests/rls-contract/run-contract.js
+        # Serial file execution: each test file's `before` hook resets
+        # the schema, so files must not race on the same database.
+        run: node --test --test-concurrency=1 tests/rls-contract/run-contract.js tests/rls-contract/run-real.test.js
