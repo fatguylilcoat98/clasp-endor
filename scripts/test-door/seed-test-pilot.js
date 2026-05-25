@@ -31,6 +31,8 @@
  * by hand, so a misconfigured CI run cannot accidentally commit secrets.
  */
 
+const fs = require('node:fs');
+const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { parseArgs } = require('node:util');
@@ -38,15 +40,73 @@ const { Client } = require('pg');
 
 const ADMIN_USERNAME = 'test_door_admin';
 
+// Built-in defaults for the test-door pilot. Placeholder labels only —
+// no real client data. Used when --answers is not supplied so the
+// operator can run `npm run seed:test-door` with zero arguments on a
+// fresh Render shell.
+const DEFAULT_ANSWERS = Object.freeze({
+  schema_version: '1.0',
+  pilot:            { org_name: 'Test Door' },
+  senior:           { username: 'test_door_senior' },
+  supported_person: { display_name: 'Test User', timezone: 'UTC', locale: 'en-US' },
+  companion: {
+    name: 'Test Companion',
+    persona: {
+      tone: 'warm',
+      speaking_style: 'clear and simple',
+      values: [],
+      warmth_level: 'standard',
+      cultural_tone: 'none',
+      cultural_notes: '',
+      faith_tone: 'none',
+      faith_notes: '',
+      topics: { disallowed: [], encouraged: [], notes: '' },
+      terminology: {
+        family_term: 'family',
+        caregiver_term: 'caregiver',
+        supported_person_term: 'the person you support',
+      },
+      reminders: { style: 'gentle', frequency: 'as_scheduled' },
+    },
+    voice:  { enabled: false, voice_id: '', speaking_rate: 'normal' },
+    safety: {
+      posture: 'standard',
+      emotional_boundaries: { comfort_role: 'supportive_companion' },
+      escalation: { preferred_channel: 'circle', contact_order: [] },
+    },
+  },
+});
+
 function isLocalDatabaseUrl(url) {
   if (typeof url !== 'string' || url.length === 0) return false;
   try {
     const u = new URL(url);
-    const host = u.hostname;
+    const host = u.hostname.replace(/^\[|\]$/g, '');
     return host === 'localhost' || host === '127.0.0.1' || host === '::1';
   } catch {
     return false;
   }
+}
+
+// Disposable-test-door escape hatch for Render-hosted Postgres.
+// Mirror the boot-web rule: three aligned flags or it stays local-only.
+function isRemoteDatabaseAllowed() {
+  return (
+    String(process.env.GNG_TEST_INSTANCE_ALLOW_RENDER_DB || '').toLowerCase() === 'true'
+    && String(process.env.LYLO_WEB_MODE || '').toLowerCase() === 'true'
+    && String(process.env.LYLO_SHELL_MODE || '').toLowerCase() === 'true'
+  );
+}
+
+function isAcceptableDatabaseUrl(url) {
+  if (isLocalDatabaseUrl(url)) return true;
+  if (typeof url !== 'string' || url.length === 0) return false;
+  try {
+    new URL(url);
+  } catch {
+    return false;
+  }
+  return isRemoteDatabaseAllowed();
 }
 
 function parseInputs() {
@@ -58,10 +118,15 @@ function parseInputs() {
     strict: false,
   });
   const answers = args.values.answers || process.env.ANSWERS_FILE;
-  if (!answers) {
-    throw new Error('--answers <path> (or ANSWERS_FILE env) is required');
+  if (answers) {
+    return { answersPath: path.resolve(answers), tempAnswers: false };
   }
-  return { answersPath: path.resolve(answers) };
+  // Zero-argument path: write the built-in defaults to a temp file
+  // and use that. The temp file lives in os.tmpdir() and is removed
+  // after provisioning runs (success or failure).
+  const tempPath = path.join(os.tmpdir(), `test-door-answers-${process.pid}.json`);
+  fs.writeFileSync(tempPath, JSON.stringify(DEFAULT_ANSWERS, null, 2));
+  return { answersPath: tempPath, tempAnswers: true };
 }
 
 function runProvisioner(answersPath) {
@@ -109,13 +174,43 @@ async function ensureAdminUser(client, pilotInstanceId) {
 }
 
 async function main() {
-  const { answersPath } = parseInputs();
+  const { answersPath, tempAnswers } = parseInputs();
   const setupUrl = process.env.LYLO_SETUP_DATABASE_URL;
-  if (!isLocalDatabaseUrl(setupUrl)) {
-    throw new Error('LYLO_SETUP_DATABASE_URL must point at localhost / 127.0.0.1 — refusing to touch a remote database');
+  if (!isAcceptableDatabaseUrl(setupUrl)) {
+    if (tempAnswers) { try { fs.unlinkSync(answersPath); } catch { /* ignore */ } }
+    throw new Error(
+      'LYLO_SETUP_DATABASE_URL must point at localhost / 127.0.0.1 '
+        + '(or set GNG_TEST_INSTANCE_ALLOW_RENDER_DB=true with '
+        + 'LYLO_WEB_MODE=true and LYLO_SHELL_MODE=true to allow a '
+        + 'remote test-door Postgres) — refusing to touch a remote database'
+    );
   }
 
-  runProvisioner(answersPath);
+  // Idempotency: if a pilot already exists, skip provisioning and
+  // just look up the existing IDs. This lets the operator re-run the
+  // command after fixing config without hitting the provisioner's
+  // "pilot already exists" guard.
+  const preflightClient = new Client({ connectionString: setupUrl });
+  await preflightClient.connect();
+  let alreadyProvisioned = false;
+  try {
+    const existing = await preflightClient.query(
+      'SELECT id FROM pilot_instances LIMIT 1'
+    );
+    alreadyProvisioned = existing.rowCount > 0;
+  } finally {
+    await preflightClient.end();
+  }
+
+  if (!alreadyProvisioned) {
+    try {
+      runProvisioner(answersPath);
+    } finally {
+      if (tempAnswers) { try { fs.unlinkSync(answersPath); } catch { /* ignore */ } }
+    }
+  } else if (tempAnswers) {
+    try { fs.unlinkSync(answersPath); } catch { /* ignore */ }
+  }
 
   const client = new Client({ connectionString: setupUrl });
   await client.connect();
@@ -132,10 +227,13 @@ async function main() {
   }
 
   process.stdout.write('\n');
-  process.stdout.write('# Test-door identifiers — paste into .env (do NOT commit):\n');
-  process.stdout.write(`export LYLO_PILOT_INSTANCE_ID=${pilotInstanceId}\n`);
-  process.stdout.write(`export LYLO_TEST_SENIOR_USER_ID=${seniorUserId}\n`);
-  process.stdout.write(`export LYLO_TEST_ADMIN_USER_ID=${adminUserId}\n`);
+  if (alreadyProvisioned) {
+    process.stdout.write('# Existing test-door pilot found — reusing.\n');
+  }
+  process.stdout.write('# Test-door identifiers — paste into Render env (do NOT commit):\n');
+  process.stdout.write(`LYLO_PILOT_INSTANCE_ID=${pilotInstanceId}\n`);
+  process.stdout.write(`LYLO_TEST_SENIOR_USER_ID=${seniorUserId}\n`);
+  process.stdout.write(`LYLO_TEST_ADMIN_USER_ID=${adminUserId}\n`);
 }
 
 main().catch((err) => {

@@ -66,3 +66,76 @@ never connect to a remote database, including the factory mold's.
 - No new substrate tables, no new governance actors, no new ctx
   operations, no `EVENT_TYPES` widening. The mold's substrate is
   consumed read-only through existing public surfaces.
+
+### Running the test door on a remote Postgres (Render only)
+
+The test door fails closed on any non-localhost DB URL by default. To
+allow a Render-hosted Postgres for the disposable test instance, set
+**all three** of these flags on the same process:
+
+- `GNG_TEST_INSTANCE_ALLOW_RENDER_DB=true`
+- `LYLO_WEB_MODE=true`
+- `LYLO_SHELL_MODE=true`
+
+Any one missing → boot refuses to start. The mold's boot path does
+not consult this flag.
+
+#### One-time setup on Render
+
+1. Provision a Render Postgres instance, copy the **External Database
+   URL** (it includes `?sslmode=require`).
+2. In Render's service shell, run:
+
+       LYLO_SETUP_DATABASE_URL='postgres://...sslmode=require' \
+       GNG_TEST_INSTANCE_ALLOW_RENDER_DB=true \
+       LYLO_WEB_MODE=true \
+       LYLO_SHELL_MODE=true \
+       npm run migrate:test-door
+
+   Re-runnable safely — already-applied migrations are reported and
+   skipped (pg codes `42P07` / `42710` etc.).
+
+3. Then seed the pilot + users (zero arguments needed; uses built-in
+   placeholder labels):
+
+       LYLO_SETUP_DATABASE_URL='postgres://...sslmode=require' \
+       GNG_TEST_INSTANCE_ALLOW_RENDER_DB=true \
+       LYLO_WEB_MODE=true \
+       LYLO_SHELL_MODE=true \
+       npm run seed:test-door
+
+   Output ends with three lines like:
+
+       LYLO_PILOT_INSTANCE_ID=<uuid>
+       LYLO_TEST_SENIOR_USER_ID=<uuid>
+       LYLO_TEST_ADMIN_USER_ID=<uuid>
+
+   Re-running the seed against an already-provisioned pilot prints
+   the existing IDs (it does not duplicate rows).
+
+#### Render environment variables (test-door service)
+
+Set every variable below on the Render service. Real values; never
+commit them.
+
+| Variable | Required | Notes |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | yes | The Anthropic API key for the test door. |
+| `LYLO_APP_DATABASE_URL` | yes | Render External Database URL with `?sslmode=require`. |
+| `LYLO_RUNTIME_DATABASE_URL` | optional | Not used by `start:web`; safe to set to the same Render URL for consistency. |
+| `LYLO_SETUP_DATABASE_URL` | seed-only | Same Render URL; needed when running `migrate:test-door` or `seed:test-door`. |
+| `LYLO_PILOT_INSTANCE_ID` | yes | UUID printed by `seed:test-door`. |
+| `LYLO_TEST_SENIOR_USER_ID` | yes | UUID printed by `seed:test-door`. |
+| `LYLO_TEST_ADMIN_USER_ID` | yes | UUID printed by `seed:test-door`. |
+| `LYLO_SHELL_MODE` | yes | Must be `true` for the Render escape hatch to engage. |
+| `LYLO_WEB_MODE` | yes | Must be `true` — gates the web entry point. |
+| `GNG_TEST_INSTANCE_ALLOW_RENDER_DB` | yes | Must be `true` — gates the non-localhost rule. |
+| `WEB_SESSION_SECRET` | yes | Random string, length >= 16. Rotate by changing the value. |
+| `PORT` | yes | `10000` for Render's default web service port. |
+
+Render service start command:
+
+    npm run start:web
+
+This is a test door. Real client data must never enter this instance.
+Delete and recreate at any time.

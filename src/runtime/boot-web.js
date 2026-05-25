@@ -53,11 +53,46 @@ function isLocalDatabaseUrl(url) {
   if (typeof url !== 'string' || url.length === 0) return false;
   try {
     const u = new URL(url);
-    const host = u.hostname;
+    // Node's URL parser keeps brackets on IPv6 hostnames; strip them
+    // so '[::1]' and '::1' both compare equal.
+    const host = u.hostname.replace(/^\[|\]$/g, '');
     return host === 'localhost' || host === '127.0.0.1' || host === '::1';
   } catch {
     return false;
   }
+}
+
+/*
+ * Disposable-test-door escape hatch for remote Postgres on Render.
+ *
+ * Requires THREE explicit flags aligned, all on the same request:
+ *   - GNG_TEST_INSTANCE_ALLOW_RENDER_DB=true
+ *   - LYLO_WEB_MODE=true
+ *   - LYLO_SHELL_MODE=true
+ *
+ * Any one missing falls back to the localhost-only rule. This is
+ * intentional: a single misconfigured flag must not unlock a remote
+ * connection. The mold's boot path does NOT consult this flag (its
+ * own validation is unchanged), so the escape hatch is scoped to
+ * clasp-endor's test-door boot only.
+ */
+function isRemoteDatabaseAllowed(env) {
+  return (
+    String(env.GNG_TEST_INSTANCE_ALLOW_RENDER_DB || '').toLowerCase() === 'true'
+    && String(env.LYLO_WEB_MODE || '').toLowerCase() === 'true'
+    && String(env.LYLO_SHELL_MODE || '').toLowerCase() === 'true'
+  );
+}
+
+function isAcceptableDatabaseUrl(url, env) {
+  if (isLocalDatabaseUrl(url)) return true;
+  if (typeof url !== 'string' || url.length === 0) return false;
+  try {
+    new URL(url);
+  } catch {
+    return false;
+  }
+  return isRemoteDatabaseAllowed(env);
 }
 
 function readIdentities(env) {
@@ -102,8 +137,13 @@ async function bootWeb(rawEnv) {
   if (typeof env.WEB_SESSION_SECRET !== 'string' || env.WEB_SESSION_SECRET.length < 16) {
     errors.push('WEB_SESSION_SECRET must be a string of length >= 16');
   }
-  if (!isLocalDatabaseUrl(env.LYLO_APP_DATABASE_URL)) {
-    errors.push('LYLO_APP_DATABASE_URL must point at localhost / 127.0.0.1');
+  if (!isAcceptableDatabaseUrl(env.LYLO_APP_DATABASE_URL, env)) {
+    errors.push(
+      'LYLO_APP_DATABASE_URL must point at localhost / 127.0.0.1 '
+        + '(or set GNG_TEST_INSTANCE_ALLOW_RENDER_DB=true with '
+        + 'LYLO_WEB_MODE=true and LYLO_SHELL_MODE=true to allow a '
+        + 'remote test-door Postgres)'
+    );
   }
 
   const { ids, errors: idErrors } = readIdentities(env);
@@ -181,4 +221,9 @@ if (require.main === module) {
     });
 }
 
-module.exports = { bootWeb };
+module.exports = {
+  bootWeb,
+  isLocalDatabaseUrl,
+  isRemoteDatabaseAllowed,
+  isAcceptableDatabaseUrl,
+};
