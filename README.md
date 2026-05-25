@@ -1,3 +1,14 @@
+# TEST INSTANCE — SAFE TO BREAK — NOT FACTORY MOLD
+
+This repo is a disposable test copy of fatguylilcoat98/AI-companion-GNG.
+The factory mold remains canonical.
+Real client data must never enter this repo.
+This repo may be deleted and recloned at any time.
+
+See `TEST-INSTANCE.md` for full rules.
+
+---
+
 # ai-companion-gng — Lylo Companion Golden Master Template
 
 This repository is the **golden master template** for the Lylo Companion
