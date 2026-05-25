@@ -119,6 +119,19 @@ const LAYERS = Object.freeze([
   'static-scan',
   'boundary-guard',
   'snapshot',
+  // GM-30 harness-corrective patch: when the actor wraps a
+  // DB-side rejection into ReviewRepositoryError, the
+  // sanitization layer in src/review/transaction.js
+  // intentionally discards the original error class, so the
+  // harness cannot disambiguate UNIQUE vs CHECK vs trigger vs
+  // RLS WITH CHECK vs GRANT denial after the fact. Per the
+  // OQ-30 harness-only corrective directive, db-rejection is
+  // the conservative bucket for "the substrate refused at the
+  // DB layer, exact sub-layer not recoverable." Probes that
+  // need the exact sub-layer should issue raw SQL through
+  // tests/integration/*.test.js where the original error
+  // class is still visible (per OQ-30.6(b)).
+  'db-rejection',
 ]);
 
 // Council-facing failure classifications. Per constitutional

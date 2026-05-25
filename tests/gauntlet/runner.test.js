@@ -8,9 +8,13 @@
  * the actual result matches.
  *
  * Manual scenarios under tests/gauntlet/manual/ are NOT loaded
- * unless the runner is invoked with the explicit --manual flag
- * (per OQ-30.15 + constitutional addendum 4). L38 in the
- * adversarial suite asserts the directory contract.
+ * unless the runner is invoked with the explicit environment
+ * variable GAUNTLET_MANUAL=1 (per OQ-30.15 + constitutional
+ * addendum 4; GM-30 harness-corrective patch replaced the
+ * original `--manual` argv flag because node --test does not
+ * propagate child-process arguments reliably). L38 in the
+ * adversarial suite asserts both the directory contract AND
+ * the env-var contract.
  *
  * Per OQ-30.5: drops + re-applies the schema and fixtures
  * BEFORE EACH scenario via the bootstrap superuser. The pool
@@ -84,10 +88,11 @@ after(async () => {
 });
 
 // Build the per-test discovery list. Versioned scenarios always
-// run. Manual scenarios run only if --manual is in process.argv
-// (parsed below). Per L38, the directory boundary is structural.
+// run. Manual scenarios run only if GAUNTLET_MANUAL=1 is set in
+// the environment. Per L38, the directory boundary is
+// structural; the env-var contract is mechanical.
 const versioned = discoverScenarios(SCENARIOS_DIR);
-const wantManual = process.argv.includes('--manual');
+const wantManual = process.env.GAUNTLET_MANUAL === '1';
 const manual = wantManual ? discoverScenarios(MANUAL_DIR) : [];
 
 for (const file of versioned) {

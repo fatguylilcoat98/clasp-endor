@@ -56,6 +56,21 @@ function inferLayerHit(traceEntries) {
   for (let i = traceEntries.length - 1; i >= 0; i -= 1) {
     const e = traceEntries[i];
     if (!e.ok) {
+      // GM-30 harness-corrective patch: the actor's `execute`
+      // wraps DB-side rejections into ReviewRepositoryError via
+      // src/review/transaction.js sanitizeError. When the stage
+      // is the generic actor.invoke entrypoint AND the wrapped
+      // error class is ReviewRepositoryError, the rejection
+      // landed at the DB layer — UNIQUE, CHECK, trigger, RLS
+      // WITH CHECK, or GRANT — but the sanitizer intentionally
+      // discards which sub-layer fired. db-rejection is the
+      // conservative bucket. Probes needing exact sub-layer
+      // discrimination should issue raw SQL via
+      // tests/integration/*.test.js where the original error
+      // class survives.
+      if (e.stage === 'actor.invoke' && e.errorClass === 'ReviewRepositoryError') {
+        return 'db-rejection';
+      }
       return LAYER_BY_STAGE[e.stage] || null;
     }
   }

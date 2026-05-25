@@ -23,7 +23,7 @@
   },
   "expect": {
     "result": "expected_rejection",
-    "layerHit": "rls",
+    "layerHit": "db-rejection",
     "errorClassMatches": "^ReviewRepositoryError$"
   }
 }

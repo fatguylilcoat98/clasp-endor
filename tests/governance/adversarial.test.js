@@ -2301,8 +2301,14 @@ test('L37. Gauntlet vocabulary snapshots — locked schema vocabularies.', () =>
     'expected_rejection', 'expected_throw',
   ], 'L37: EXPECT_RESULTS drift — exactly 4 outcomes locked');
 
-  assert.equal(LAYERS.length, 18,
-    'L37: LAYERS must contain exactly 18 named architectural layers');
+  assert.equal(LAYERS.length, 19,
+    'L37: LAYERS must contain exactly 19 named architectural layers '
+    + '(GM-30 harness-corrective patch added "db-rejection" as the '
+    + 'conservative bucket for ReviewRepositoryError-wrapped DB '
+    + 'refusals where the sanitizer discards which sub-layer fired)');
+  assert.ok(LAYERS.includes('db-rejection'),
+    'L37: LAYERS must include "db-rejection" — the wrapped-DB-error bucket '
+    + 'added by the GM-30 harness-corrective patch');
 
   assert.deepEqual([...COUNCIL_CLASSIFICATIONS].sort(), [
     'classified_pending',
@@ -2337,10 +2343,16 @@ test('L38. Manual-mode scenario refusal — tests/gauntlet/manual/ directory exi
   assert.match(gitignore, /^!tests\/gauntlet\/manual\/\.gitkeep$/m,
     'L38: .gitignore must keep the .gitkeep placeholder via "!tests/gauntlet/manual/.gitkeep" so the directory itself ships and the L38 existsSync check holds on a fresh CI checkout');
 
-  // The runner must NOT load manual scenarios without --manual.
-  // We verify the structural rule by reading the runner source
-  // — it must reference process.argv.includes('--manual').
+  // The runner must NOT load manual scenarios without the
+  // GAUNTLET_MANUAL=1 environment variable. We verify the
+  // structural rule by reading the runner source — it must
+  // reference process.env.GAUNTLET_MANUAL === '1'. The
+  // env-var contract replaced the original --manual argv flag
+  // because `node --test` does not propagate child-process
+  // arguments reliably (GM-30 harness-corrective patch).
   const runner = fs.readFileSync(path.join(REPO, 'tests/gauntlet/runner.test.js'), 'utf8');
-  assert.match(runner, /process\.argv\.includes\(['"]--manual['"]\)/,
-    'L38: runner.test.js must gate manual-scenario loading behind --manual');
+  assert.match(runner, /process\.env\.GAUNTLET_MANUAL\s*===\s*['"]1['"]/,
+    'L38: runner.test.js must gate manual-scenario loading behind GAUNTLET_MANUAL=1');
+  assert.doesNotMatch(runner, /process\.argv\.includes\(['"]--manual['"]\)/,
+    'L38: runner.test.js must NOT use the old --manual argv flag — node --test does not propagate it');
 });

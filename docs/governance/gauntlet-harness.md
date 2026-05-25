@@ -110,7 +110,8 @@ A council member writes a probe in plain English:
 Claude (or any council member) translates the English probe
 into a scenario JSON file. If the probe is exploratory, it
 goes under `tests/gauntlet/manual/` (gitignored, never
-auto-run, requires explicit `--manual` flag). If the council
+auto-run, requires the explicit `GAUNTLET_MANUAL=1`
+environment variable). If the council
 classifies the probe as canonical, it gets promoted to
 `tests/gauntlet/scenarios/` with a stable `id`.
 
@@ -138,8 +139,15 @@ reaches the harness's dispatch layer.
 ```sh
 DATABASE_URL=postgres://.../lylo_rls \
 LYLO_APP_DATABASE_URL=postgres://lylo_app_login:.../lylo_rls \
-node --test --test-concurrency=1 tests/gauntlet/runner.test.js -- --manual
+GAUNTLET_MANUAL=1 \
+node --test --test-concurrency=1 tests/gauntlet/runner.test.js
 ```
+
+The harness uses an environment variable rather than a CLI flag
+because `node --test` does not propagate extra `argv` entries
+to child test processes — the original `--manual` flag was
+silently dropped. `GAUNTLET_MANUAL=1` survives the spawn and
+L38 mechanically asserts the env-var contract.
 
 The runner emits one result JSON per scenario. The result is
 **structurally locked** — only typed fields, no payload echo,
@@ -189,7 +197,7 @@ The harness is mechanically forbidden from:
 | `setInterval` / `setImmediate` / `cron` / `schedule` | `check-gauntlet-boundary.js` |
 | Reaching into `_BLESSED` / `_TOKEN` / `_createDecision` in `src/governance/decisions.js` | The classifier does not export them; the harness cannot acquire them through any allowed path |
 | Direct writes to `governance_audit_log` | The harness has no SQL keyword; the audit module owns that table |
-| Manual scenario auto-loading without `--manual` flag | L38 + the runner |
+| Manual scenario auto-loading without `GAUNTLET_MANUAL=1` env var | L38 + the runner |
 | Importing `src/gauntlet/` from any production module | The six reciprocal boundary guards + `check-gauntlet-boundary.js` |
 | Adding a new actor, table, ctx op, EVENT_TYPES value, or vocabulary entry | L22 substrate-freeze canary |
 
