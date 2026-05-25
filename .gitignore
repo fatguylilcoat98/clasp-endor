@@ -62,3 +62,9 @@ coverage/
 # is gitignored so local probes never accidentally commit.
 tests/gauntlet/manual/*
 !tests/gauntlet/manual/.gitkeep
+
+# ----------------------------------------------------------------------------
+# Test-door (clasp-endor only) — local-only answers files must not commit
+# ----------------------------------------------------------------------------
+config/test-door.answers.json
+config/test-door.answers.local.json

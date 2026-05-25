@@ -10,7 +10,10 @@
   "scripts": {
     "setup": "echo \"GM-0 scaffold: no runnable scripts yet\" && exit 0",
     "start": "node src/runtime/boot.js",
-    "test": "node --test tests/runtime/*.test.js"
+    "start:web": "node src/runtime/boot-web.js",
+    "seed:test-door": "node scripts/test-door/seed-test-pilot.js",
+    "test": "node --test tests/runtime/*.test.js",
+    "test:web": "node --test tests/web/*.test.js"
   },
   "devDependencies": {
     "ajv": "8.17.1"

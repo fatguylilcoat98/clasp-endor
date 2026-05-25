@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Test Door — Lylo Companion</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <div id="banner" role="alert">
+      TEST INSTANCE — SAFE TO BREAK — NOT FACTORY MOLD
+    </div>
+
+    <main id="app">
+      <section id="setup-card" class="card" aria-labelledby="setup-title">
+        <h1 id="setup-title">Start the Companion</h1>
+        <p class="lede">
+          This is a test door. Nothing here is real. Anything you type
+          may be deleted at any time.
+        </p>
+        <form id="setup-form" autocomplete="off">
+          <label for="name-input">Your name</label>
+          <input
+            id="name-input"
+            name="name"
+            type="text"
+            required
+            maxlength="64"
+            autocomplete="off"
+            placeholder="e.g. Margaret"
+          />
+
+          <fieldset id="role-fieldset">
+            <legend>Who are you using as?</legend>
+            <label class="role-option">
+              <input type="radio" name="role" value="regular" checked />
+              <span>Regular user</span>
+            </label>
+            <label class="role-option">
+              <input type="radio" name="role" value="admin" />
+              <span>Admin</span>
+            </label>
+          </fieldset>
+
+          <label for="companion-name-input">
+            Companion name (optional)
+          </label>
+          <input
+            id="companion-name-input"
+            name="companionName"
+            type="text"
+            maxlength="64"
+            autocomplete="off"
+            placeholder="e.g. Mable"
+          />
+
+          <button id="setup-submit" type="submit">Start Companion</button>
+          <p id="setup-error" class="error-block" role="alert" hidden></p>
+        </form>
+      </section>
+
+      <section id="chat-card" class="card" hidden aria-labelledby="chat-title">
+        <header id="chat-header">
+          <h1 id="chat-title">Hello, <span id="display-name"></span></h1>
+          <p id="online-line">Companion online — <span id="companion-label-display"></span></p>
+          <button id="logout-button" type="button" class="link-button">Sign out</button>
+        </header>
+
+        <div id="transcript" aria-live="polite" aria-relevant="additions"></div>
+
+        <div id="loading" hidden>
+          <span class="spinner" aria-hidden="true"></span>
+          <span>Companion is thinking…</span>
+        </div>
+
+        <p id="chat-error" class="error-block" role="alert" hidden></p>
+
+        <form id="chat-form" autocomplete="off">
+          <label for="message-input">Type a message</label>
+          <textarea
+            id="message-input"
+            name="message"
+            rows="3"
+            maxlength="8000"
+            placeholder="Say something to the companion…"
+          ></textarea>
+          <button id="chat-submit" type="submit">Send</button>
+        </form>
+
+        <section id="admin-card" hidden aria-labelledby="admin-title">
+          <details>
+            <summary id="admin-title">Admin: recent interactions (read-only)</summary>
+            <div id="admin-controls">
+              <button id="admin-refresh" type="button">Refresh</button>
+              <span id="admin-meta"></span>
+            </div>
+            <table id="admin-table">
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Role</th>
+                  <th>Outcome</th>
+                  <th>Decision</th>
+                  <th>Reason</th>
+                  <th>Memory</th>
+                  <th>Resp chars</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody id="admin-tbody"></tbody>
+            </table>
+          </details>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
