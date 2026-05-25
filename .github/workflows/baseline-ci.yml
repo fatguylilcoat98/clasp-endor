@@ -187,6 +187,22 @@ jobs:
         run: npm ci
       - run: node --test tests/runtime/*.test.js tests/memory/*.test.js tests/companion/*.test.js tests/conversation/*.test.js tests/governance/*.test.js tests/actors/*.test.js tests/review/*.test.js
 
+  web-tests:
+    name: Web unit tests
+    # Test-door (clasp-endor only). Runs tests/web/*.test.js, which
+    # exercise the HTTP surface against an in-process stub model client
+    # — no real ANTHROPIC_API_KEY, no real database, no external
+    # services. Failing this job blocks merge.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm ci
+      - run: node --test tests/web/*.test.js
+
   integration-tests:
     name: Runtime integration tests
     runs-on: ubuntu-latest
