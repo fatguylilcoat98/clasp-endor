@@ -179,7 +179,44 @@ CREATE TRIGGER memory_store_immutable_columns
   BEFORE UPDATE ON memory_store
   FOR EACH ROW EXECUTE FUNCTION trg_memory_store_immutable_columns();
 
-CREATE INDEX idx_memory_store_status_active
+-- Add missing columns and constraints for existing tables
+DO $$
+BEGIN
+  -- Add memory_status column if it doesn't exist
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'memory_store' AND column_name = 'memory_status'
+  ) THEN
+    ALTER TABLE memory_store
+    ADD COLUMN memory_status TEXT NOT NULL DEFAULT 'WORKING_ACTIVE';
+
+    ALTER TABLE memory_store
+    ADD CONSTRAINT memory_status_check
+    CHECK (memory_status IN ('WORKING_ACTIVE', 'GOVERNANCE_PENDING', 'VERIFIED', 'SUPERSEDED'));
+  END IF;
+
+  -- Add pilot_instance_id, id UNIQUE constraint if it doesn't exist
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+    WHERE table_name = 'memory_store' AND constraint_name LIKE '%pilot_instance_id%id%'
+  ) THEN
+    ALTER TABLE memory_store
+    ADD CONSTRAINT memory_store_pilot_id_uk UNIQUE (pilot_instance_id, id);
+  END IF;
+
+  -- Ensure governance_review_queue has required UNIQUE constraint
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'governance_review_queue')
+     AND NOT EXISTS (
+       SELECT 1 FROM information_schema.table_constraints
+       WHERE table_name = 'governance_review_queue' AND constraint_name LIKE '%pilot_instance_id%id%'
+     ) THEN
+    ALTER TABLE governance_review_queue
+    ADD CONSTRAINT governance_review_queue_pilot_id_uk UNIQUE (pilot_instance_id, id);
+  END IF;
+
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_memory_store_status_active
 ON memory_store (pilot_instance_id, owning_user_id, memory_status, created_at DESC)
 WHERE memory_status = 'WORKING_ACTIVE' AND active = true;
 
