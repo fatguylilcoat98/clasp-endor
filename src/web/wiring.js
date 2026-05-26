@@ -25,7 +25,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 
-const { createMemoryPool, closeMemoryPool } = require('../memory');
+const { createMemoryPool, closeMemoryPool, createMemoryWriter } = require('../memory');
 const { createCompanionReader } = require('../companion');
 const { createConversationRuntime } = require('../conversation/runtime');
 const { createResponseDeliveryActor } = require('../actors');
@@ -105,6 +105,7 @@ function createTestDoorWiring(options) {
 
   const logAdapter = buildLogAdapter(log);
   const companionReader = createCompanionReader({ memoryPool, log: logAdapter });
+  const memoryWriter = createMemoryWriter({ memoryPool, logger: logAdapter });
   const conversationRuntime = createConversationRuntime({
     companionReader,
     modelClient,
@@ -151,6 +152,28 @@ function createTestDoorWiring(options) {
       companionConfig,
     });
 
+    // Store working memories from user message after successful response
+    let memoryWriteResult = null;
+    if (result.outcome === 'executed') {
+      try {
+        memoryWriteResult = await memoryWriter.storeWorkingMemories({
+          userMessage,
+          pilotInstanceId,
+          userId,
+          userRole,
+          options: { minConfidence: 0.5 }
+        });
+      } catch (error) {
+        // Log error but don't fail the chat response
+        if (log) {
+          log('warn', 'wiring.memory_write_failed', {
+            error_class: describeErrClass(error),
+            message: error.message?.substring(0, 100)
+          });
+        }
+      }
+    }
+
     const bundle = {
       outcome: result.outcome,
       decision: result.decision.decision,
@@ -162,6 +185,8 @@ function createTestDoorWiring(options) {
       auditVerdict: result.auditVerdict || 'N/A',
       auditDetails: result.auditDetails || 'no-audit',
       auditReason: result.auditReason,
+      memoriesStored: memoryWriteResult?.stored || 0,
+      factsExtracted: memoryWriteResult?.extracted || 0,
     };
     bundle.executed = bundle.outcome === 'executed';
     return bundle;

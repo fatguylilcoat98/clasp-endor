@@ -34,10 +34,12 @@
 const { createMemoryPool, closeMemoryPool } = require('./client');
 const { withMemoryContext } = require('./transaction');
 const { MemoryRepositoryError } = require('./errors');
+const { createMemoryWriter } = require('./writer');
 
 module.exports = {
   createMemoryPool,
   closeMemoryPool,
   withMemoryContext,
   MemoryRepositoryError,
+  createMemoryWriter,
 };

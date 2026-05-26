@@ -110,6 +110,10 @@
         appendKv(dl, 'auditReason', String(g.auditReason));
       }
     }
+    if (g.memoriesStored != null || g.factsExtracted != null) {
+      appendKv(dl, 'memoriesStored', String(g.memoriesStored || 0));
+      appendKv(dl, 'factsExtracted', String(g.factsExtracted || 0));
+    }
     details.appendChild(dl);
     return details;
   }

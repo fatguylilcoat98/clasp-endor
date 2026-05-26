@@ -33,6 +33,7 @@
 const { insertAuditEvent, EVENT_TYPES } = require('./audit');
 
 const VALID_PROVENANCE = new Set(['VERIFIED_FACT', 'USER_STATED', 'AI_INFERRED']);
+const VALID_MEMORY_STATUS = new Set(['WORKING_ACTIVE', 'GOVERNANCE_PENDING', 'VERIFIED', 'SUPERSEDED']);
 
 // Maximum content length, in UTF-8 bytes. Caps an individual memory at
 // 64 KiB — generous for any reasonable supported-person statement and
@@ -45,12 +46,12 @@ async function listVisibleMemories(client, sessionCtx, options) {
 
   const result = await client.query(
     'SELECT id, owning_user_id, content, provenance, visibility_level, '
-      + 'admissibility_state, vault_id, active, created_at, updated_at '
+      + 'admissibility_state, memory_status, vault_id, active, created_at, updated_at '
       + 'FROM memory_store '
-      + 'WHERE active = true '
+      + 'WHERE active = true AND memory_status IN ($2, $3) '
       + 'ORDER BY created_at DESC '
       + 'LIMIT $1',
-    [limit]
+    [limit, 'WORKING_ACTIVE', 'VERIFIED']
   );
 
   await insertAuditEvent(client, sessionCtx, {
@@ -66,7 +67,7 @@ async function insertPrivateMemory(client, sessionCtx, input) {
   if (!input || typeof input !== 'object') {
     throw new Error('insertPrivateMemory: input is required');
   }
-  const { content, provenance } = input;
+  const { content, provenance, memoryStatus } = input;
   if (typeof content !== 'string' || content.trim() === '') {
     throw new Error('insertPrivateMemory: content must be a non-empty string');
   }
@@ -85,12 +86,19 @@ async function insertPrivateMemory(client, sessionCtx, input) {
     );
   }
 
+  const status = memoryStatus || 'WORKING_ACTIVE';
+  if (!VALID_MEMORY_STATUS.has(status)) {
+    throw new Error(
+      `insertPrivateMemory: memoryStatus must be one of ${Array.from(VALID_MEMORY_STATUS).join(', ')}`
+    );
+  }
+
   const inserted = await client.query(
     'INSERT INTO memory_store '
-      + '(pilot_instance_id, owning_user_id, content, provenance, visibility_level, admissibility_state) '
-      + "VALUES ($1, $2, $3, $4, 'private', 'admissible') "
+      + '(pilot_instance_id, owning_user_id, content, provenance, visibility_level, admissibility_state, memory_status) '
+      + "VALUES ($1, $2, $3, $4, 'private', 'admissible', $5) "
       + 'RETURNING id, created_at',
-    [sessionCtx.pilotInstanceId, sessionCtx.userId, content, provenance]
+    [sessionCtx.pilotInstanceId, sessionCtx.userId, content, provenance, status]
   );
 
   const memoryId = inserted.rows[0].id;
