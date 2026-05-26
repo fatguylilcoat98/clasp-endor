@@ -601,9 +601,39 @@ DROP POLICY IF EXISTS execution_admin_select ON governance_execution_authorizati
          AND current_setting('app.user_role', true) = 'admin');
 
 -- =====================================================================
+-- 016: MEMORY CORRECTION GRANTS — narrowly-scoped UPDATE for lylo_app
+-- =====================================================================
+-- Required for the correction/supersession path
+-- (src/memory/repository.js#deactivateMemory + #promoteMemoryToVerified)
+-- to actually work in production. The db/migrations/015 immutability
+-- trigger still blocks UPDATE on id, pilot_instance_id, owning_user_id,
+-- content, provenance, created_at. The memory-boundary CI guard still
+-- restricts the UPDATE statement itself to repository.js + the
+-- {memory_status, active, updated_at} column set. RLS still applies
+-- (lylo_app has no BYPASSRLS).
+
+GRANT UPDATE (active, memory_status, updated_at) ON memory_store TO lylo_app;
+
+-- RLS policy paired with the grant — memory_store had no UPDATE policy
+-- prior, so the grant alone is insufficient (RLS default-denies when
+-- enabled with no matching policy). The immutability trigger from
+-- migration 015 still blocks the protected columns from being
+-- modified, so WITH CHECK uses the same predicate as USING.
+DROP POLICY IF EXISTS memory_store_owner_update ON memory_store;
+CREATE POLICY memory_store_owner_update ON memory_store FOR UPDATE
+  USING (
+    pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
+    AND owning_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
+  )
+  WITH CHECK (
+    pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
+    AND owning_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
+  );
+
+-- =====================================================================
 -- SUCCESS CONFIRMATION
 -- =====================================================================
 
-SELECT 'CLASP-ENDOR MASTER MIGRATION COMPLETE - All tables 001-015 created successfully' as status;
+SELECT 'CLASP-ENDOR MASTER MIGRATION COMPLETE - All tables 001-016 applied successfully' as status;
 
 

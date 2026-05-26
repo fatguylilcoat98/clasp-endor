@@ -80,6 +80,25 @@ const SYSTEM_DIRECTIVE = [
   'your role.',
 ].join(' ');
 
+// Uncertainty mediation directive — added by the hardening pass. The
+// memory layer surfaces each row with an authority_level field
+// (USER_CORRECTED > USER_CONFIRMED > SYSTEM_SEEDED > VERIFIED >
+// EXTRACTED > INFERRED). The response model must respect that ranking
+// in its hedging language: do not assert fabricated certainty about
+// identity, relationships, timeline, or emotional state when the
+// supporting memory carries low authority. See
+// docs/governance/memory-authority-hierarchy.md.
+const UNCERTAINTY_DIRECTIVE = [
+  'Express what you remember using calibrated certainty. When a memory',
+  "carries authority USER_CORRECTED or USER_CONFIRMED, you may state it",
+  'as fact. When a memory carries authority EXTRACTED or INFERRED, hedge:',
+  'use phrases like "I recall you mentioning..." or "I think you said...".',
+  'Never assert identity, relationships, dates, locations, or emotional',
+  'state as fact unless the supporting memory directly confirms it.',
+  'If memory context conflicts with itself, prefer the higher-authority',
+  'entry and acknowledge the prior conflicting belief was corrected.',
+].join(' ');
+
 function buildSystemDirective(companionConfig = {}) {
   const companionName = companionConfig.name || 'Assistant';
   const companionPersona = companionConfig.persona || 'You are a helpful AI companion';
@@ -90,6 +109,7 @@ function buildSystemDirective(companionConfig = {}) {
     `You are ${companionName}, a companion assistant.`,
     `${companionPersona}`,
     SYSTEM_DIRECTIVE,
+    UNCERTAINTY_DIRECTIVE,
     `Always respond as ${companionName}, never identify as Claude or mention Anthropic.`
   ].join(' ');
 }
@@ -181,4 +201,5 @@ module.exports = {
   renderMemoryEnvelope,
   escapeEnvelope,
   SYSTEM_DIRECTIVE,
+  UNCERTAINTY_DIRECTIVE,
 };

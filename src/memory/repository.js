@@ -40,16 +40,72 @@ const VALID_MEMORY_STATUS = new Set(['WORKING_ACTIVE', 'GOVERNANCE_PENDING', 'VE
 // conservative against DoS via oversized inserts or audit-log bloat.
 const MAX_CONTENT_LENGTH = 65536;
 
+// Memory authority hierarchy (highest → lowest). Derived from existing
+// columns; no schema change. See docs/governance/memory-authority-hierarchy.md.
+//
+//   USER_CORRECTED  — content starts with CORRECTION:/RETRACTION:.
+//                     The user explicitly overrode a prior fact;
+//                     supersedes everything else.
+//   USER_CONFIRMED  — memory_status='VERIFIED', provenance='USER_STATED'.
+//                     Promoted from working memory after confidence
+//                     threshold.
+//   SYSTEM_SEEDED   — provenance='VERIFIED_FACT'. Operator-set bootstrap
+//                     facts; rare.
+//   VERIFIED        — memory_status='VERIFIED' (any other provenance).
+//   EXTRACTED       — memory_status='WORKING_ACTIVE', provenance=
+//                     'USER_STATED'. Default for newly-extracted user
+//                     statements.
+//   INFERRED        — provenance='AI_INFERRED'. Model guess; lowest
+//                     non-superseded authority.
+//   LOW_CONFIDENCE  — fallthrough (should not normally happen in this
+//                     schema; included for completeness).
+//   SUPERSEDED      — memory_status='SUPERSEDED' or active=false.
+//                     EXCLUDED from retrieval entirely (the WHERE
+//                     clause below filters them).
+//
+// Retrieval ordering: ORDER BY authority rank ASC, created_at DESC.
+// Higher-authority memories appear first; SUPERSEDED never appears.
+function computeAuthority(row) {
+  if (!row) return 'LOW_CONFIDENCE';
+  const content = typeof row.content === 'string' ? row.content : '';
+  if (content.startsWith('CORRECTION:') || content.startsWith('RETRACTION:')) {
+    return 'USER_CORRECTED';
+  }
+  if (row.memory_status === 'VERIFIED' && row.provenance === 'USER_STATED') {
+    return 'USER_CONFIRMED';
+  }
+  if (row.provenance === 'VERIFIED_FACT') return 'SYSTEM_SEEDED';
+  if (row.memory_status === 'VERIFIED') return 'VERIFIED';
+  if (row.memory_status === 'WORKING_ACTIVE' && row.provenance === 'USER_STATED') {
+    return 'EXTRACTED';
+  }
+  if (row.provenance === 'AI_INFERRED') return 'INFERRED';
+  return 'LOW_CONFIDENCE';
+}
+
 async function listVisibleMemories(client, sessionCtx, options) {
   const opts = options || {};
   const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : 100;
 
+  // ORDER BY authority bucket (computed in SQL from same columns the JS
+  // computeAuthority uses); tie-break by created_at DESC. SUPERSEDED is
+  // excluded by the WHERE clause and never participates in ranking.
   const result = await client.query(
     'SELECT id, owning_user_id, content, provenance, visibility_level, '
       + 'admissibility_state, memory_status, vault_id, active, created_at, updated_at '
       + 'FROM memory_store '
       + 'WHERE active = true AND memory_status IN ($2, $3) '
-      + 'ORDER BY created_at DESC '
+      + 'ORDER BY '
+      + "  CASE "
+      + "    WHEN content LIKE 'CORRECTION:%' OR content LIKE 'RETRACTION:%' THEN 1 "
+      + "    WHEN memory_status = 'VERIFIED' AND provenance = 'USER_STATED' THEN 2 "
+      + "    WHEN provenance = 'VERIFIED_FACT' THEN 3 "
+      + "    WHEN memory_status = 'VERIFIED' THEN 4 "
+      + "    WHEN memory_status = 'WORKING_ACTIVE' AND provenance = 'USER_STATED' THEN 5 "
+      + "    WHEN provenance = 'AI_INFERRED' THEN 6 "
+      + '    ELSE 7 '
+      + '  END, '
+      + 'created_at DESC '
       + 'LIMIT $1',
     [limit, 'WORKING_ACTIVE', 'VERIFIED']
   );
@@ -60,6 +116,12 @@ async function listVisibleMemories(client, sessionCtx, options) {
     reason: `count=${result.rowCount}`,
   });
 
+  // Tag each row with its derived authority so callers can render or
+  // filter without re-implementing the rules. The column is virtual —
+  // it's not stored in memory_store; it's a per-read annotation.
+  for (const row of result.rows) {
+    row.authority_level = computeAuthority(row);
+  }
   return result.rows;
 }
 
@@ -232,6 +294,7 @@ module.exports = {
   findWorkingMemoriesByContent,
   findActiveMemoriesContaining,
   deactivateMemory,
+  computeAuthority,
   VALID_PROVENANCE,
   MAX_CONTENT_LENGTH,
 };
