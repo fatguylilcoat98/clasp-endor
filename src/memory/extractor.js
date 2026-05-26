@@ -137,12 +137,15 @@ function extractWithPatterns(userMessage) {
     }
   }
 
-  return facts.filter(fact => {
+  const filteredFacts = facts.filter(fact => {
     const content = fact.content.toLowerCase();
     return !content.includes('undefined') &&
            !content.includes('null') &&
            content.length >= 10;
   });
+
+  // Ensure we always return an array
+  return Array.isArray(filteredFacts) ? filteredFacts : [];
 }
 
 /**
@@ -150,13 +153,32 @@ function extractWithPatterns(userMessage) {
  * Catches subtle user-stated facts that patterns missed.
  */
 async function extractWithAI(userMessage, patternFacts = [], logger = null) {
+  // Log comprehensive API status
+  if (logger) {
+    logger.info('memory.extraction.ai_status_check', {
+      groq_sdk_available: !!Groq,
+      groq_api_key_available: !!GROQ_API_KEY,
+      groq_client_ready: !!groqClient,
+      pattern_facts_count: Array.isArray(patternFacts) ? patternFacts.length : 'not_array'
+    });
+  }
+
   if (!groqClient) {
     if (logger) {
       logger.info('memory.extraction.ai_unavailable', {
-        reason: Groq ? 'no_api_key' : 'groq_sdk_missing'
+        reason: Groq ? 'no_api_key' : 'groq_sdk_missing',
+        groq_sdk: !!Groq,
+        api_key: !!GROQ_API_KEY
       });
     }
     return [];
+  }
+
+  if (logger) {
+    logger.info('memory.extraction.ai_layer_starting', {
+      message_length: userMessage.length,
+      excluded_facts: Array.isArray(patternFacts) ? patternFacts.length : 0
+    });
   }
 
   try {
@@ -196,12 +218,31 @@ If no clear user-stated facts, return: []`;
     });
 
     const aiResponse = completion.choices[0]?.message?.content?.trim();
-    if (!aiResponse) return [];
+    if (!aiResponse) {
+      if (logger) {
+        logger.info('memory.extraction.ai_empty_response', {});
+      }
+      return [];
+    }
 
-    // Parse AI response
-    let aiFacts;
+    if (logger) {
+      logger.info('memory.extraction.ai_response_received', {
+        response_length: aiResponse.length,
+        response_preview: aiResponse.substring(0, 200)
+      });
+    }
+
+    // Parse AI response with comprehensive error handling
+    let parsedResponse;
     try {
-      aiFacts = JSON.parse(aiResponse);
+      parsedResponse = JSON.parse(aiResponse);
+      if (logger) {
+        logger.info('memory.extraction.ai_json_parsed', {
+          type: typeof parsedResponse,
+          is_array: Array.isArray(parsedResponse),
+          structure: Array.isArray(parsedResponse) ? 'array' : (typeof parsedResponse === 'object' && parsedResponse ? Object.keys(parsedResponse).join(',') : typeof parsedResponse)
+        });
+      }
     } catch (parseError) {
       if (logger) {
         logger.warn('memory.extraction.ai_parse_error', {
@@ -212,23 +253,96 @@ If no clear user-stated facts, return: []`;
       return [];
     }
 
-    if (!Array.isArray(aiFacts)) return [];
+    // Normalize AI response to array of facts
+    let aiFacts = [];
+    if (Array.isArray(parsedResponse)) {
+      aiFacts = parsedResponse;
+    } else if (parsedResponse && typeof parsedResponse === 'object') {
+      // Handle responses like {facts: [...]} or {data: [...]}
+      if (Array.isArray(parsedResponse.facts)) {
+        aiFacts = parsedResponse.facts;
+      } else if (Array.isArray(parsedResponse.data)) {
+        aiFacts = parsedResponse.data;
+      } else if (Array.isArray(parsedResponse.results)) {
+        aiFacts = parsedResponse.results;
+      } else {
+        if (logger) {
+          logger.warn('memory.extraction.ai_unexpected_object', {
+            keys: Object.keys(parsedResponse).join(','),
+            sample: JSON.stringify(parsedResponse).substring(0, 100)
+          });
+        }
+        return [];
+      }
+    } else {
+      if (logger) {
+        logger.warn('memory.extraction.ai_unexpected_type', {
+          type: typeof parsedResponse,
+          value: String(parsedResponse).substring(0, 100)
+        });
+      }
+      return [];
+    }
 
-    // Convert AI facts to our format and de-duplicate
-    return aiFacts
-      .filter(af => af.fact && typeof af.fact === 'string' && af.confidence)
-      .map(af => ({
-        content: af.fact.trim(),
-        confidence: Math.max(0.1, Math.min(1.0, Number(af.confidence) || 0.5))
-      }))
-      .filter(fact => {
-        // Remove duplicates vs pattern facts
-        const content = fact.content.toLowerCase();
-        return !alreadyExtracted.some(existing =>
-          content.includes(existing) || existing.includes(content)
-        );
-      })
-      .filter(fact => fact.content.length >= 10 && fact.content.length <= 300);
+    // Ensure we have an array at this point
+    if (!Array.isArray(aiFacts)) {
+      if (logger) {
+        logger.warn('memory.extraction.ai_not_array_after_normalization', {
+          type: typeof aiFacts,
+          value: String(aiFacts).substring(0, 100)
+        });
+      }
+      return [];
+    }
+
+    if (logger) {
+      logger.info('memory.extraction.ai_facts_normalized', {
+        raw_count: aiFacts.length,
+        sample_fact: aiFacts.length > 0 ? JSON.stringify(aiFacts[0]).substring(0, 100) : 'none'
+      });
+    }
+
+    // Convert AI facts to our format with error handling
+    try {
+      const processedFacts = aiFacts
+        .filter(af => af && typeof af === 'object' && af.fact && typeof af.fact === 'string' && af.confidence)
+        .map(af => ({
+          content: af.fact.trim(),
+          confidence: Math.max(0.1, Math.min(1.0, Number(af.confidence) || 0.5))
+        }))
+        .filter(fact => fact && fact.content && fact.content.length >= 10 && fact.content.length <= 300)
+        .filter(fact => {
+          // Remove duplicates vs pattern facts
+          const content = fact.content.toLowerCase();
+          return !alreadyExtracted.some(existing =>
+            content.includes(existing) || existing.includes(content)
+          );
+        });
+
+      // Final safety check - ensure we return an array
+      const safeFacts = Array.isArray(processedFacts) ? processedFacts : [];
+
+      if (logger) {
+        logger.info('memory.extraction.ai_facts_processed', {
+          input_count: aiFacts.length,
+          output_count: safeFacts.length,
+          facts: safeFacts.map(f => ({ content: f.content.substring(0, 50), confidence: f.confidence }))
+        });
+      }
+
+      return safeFacts;
+
+    } catch (processingError) {
+      if (logger) {
+        logger.warn('memory.extraction.ai_processing_error', {
+          error_class: processingError.name || 'unknown',
+          message: processingError.message,
+          ai_facts_type: typeof aiFacts,
+          ai_facts_length: Array.isArray(aiFacts) ? aiFacts.length : 'not_array'
+        });
+      }
+      return [];
+    }
 
   } catch (error) {
     if (logger) {
@@ -255,18 +369,57 @@ async function extractMemoriableFacts(userMessage, options = {}) {
   try {
     // Layer 1: Pattern extraction (fast, high-confidence)
     const patternFacts = extractWithPatterns(userMessage);
+    const safePatternFacts = Array.isArray(patternFacts) ? patternFacts : [];
+
+    if (logger) {
+      logger.info('memory.extraction.pattern_layer_completed', {
+        raw_result_type: typeof patternFacts,
+        raw_result_array: Array.isArray(patternFacts),
+        safe_facts_count: safePatternFacts.length
+      });
+    }
 
     // Layer 2: AI extraction (robust, catches what patterns miss)
-    const aiFacts = await extractWithAI(userMessage, patternFacts, logger);
+    const aiFacts = await extractWithAI(userMessage, safePatternFacts, logger);
+    const safeAiFacts = Array.isArray(aiFacts) ? aiFacts : [];
 
-    // Combine results
-    const allFacts = [...patternFacts, ...aiFacts];
+    if (logger) {
+      logger.info('memory.extraction.ai_layer_completed', {
+        raw_result_type: typeof aiFacts,
+        raw_result_array: Array.isArray(aiFacts),
+        safe_facts_count: safeAiFacts.length
+      });
+    }
+
+    // Combine results with additional safety
+    let allFacts = [];
+    try {
+      allFacts = [...safePatternFacts, ...safeAiFacts];
+
+      // Final safety check - ensure all elements are valid fact objects
+      allFacts = allFacts.filter(fact =>
+        fact &&
+        typeof fact === 'object' &&
+        typeof fact.content === 'string' &&
+        typeof fact.confidence === 'number'
+      );
+    } catch (mergeError) {
+      if (logger) {
+        logger.warn('memory.extraction.merge_error', {
+          error_class: mergeError.name || 'unknown',
+          message: mergeError.message,
+          pattern_facts_type: typeof safePatternFacts,
+          ai_facts_type: typeof safeAiFacts
+        });
+      }
+      allFacts = [];
+    }
 
     if (logger) {
       logger.info('memory.extraction.completed', {
         message_length: userMessage.length,
-        pattern_facts: patternFacts.length,
-        ai_facts: aiFacts.length,
+        pattern_facts: safePatternFacts.length,
+        ai_facts: safeAiFacts.length,
         total_facts: allFacts.length,
         avg_confidence: allFacts.length > 0
           ? allFacts.reduce((sum, f) => sum + f.confidence, 0) / allFacts.length

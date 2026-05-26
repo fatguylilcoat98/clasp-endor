@@ -48,6 +48,17 @@ function createMemoryWriter(options = {}) {
 
     const { userMessage, pilotInstanceId, userId, userRole, options: opts = {} } = input;
 
+    // Log memory system status
+    if (logger) {
+      logger.info('memory.writer.system_status', {
+        memory_pool_available: !!memoryPool,
+        pilot_instance_id: pilotInstanceId,
+        user_id: userId,
+        user_role: userRole,
+        message_length: userMessage ? userMessage.length : 0
+      });
+    }
+
     if (!userMessage || typeof userMessage !== 'string') {
       throw new Error('storeWorkingMemories: userMessage is required');
     }
@@ -61,10 +72,13 @@ function createMemoryWriter(options = {}) {
     const minConfidence = opts.minConfidence || 0.5;
 
     // Extract memorable facts from the user message
-    const facts = extractMemoriableFacts(userMessage, { logger });
+    const facts = await extractMemoriableFacts(userMessage, { logger });
+
+    // Ensure facts is always an array (guard against extraction failures)
+    const factsArray = Array.isArray(facts) ? facts : [];
 
     // Filter by confidence threshold
-    const qualifiedFacts = facts.filter(fact => fact.confidence >= minConfidence);
+    const qualifiedFacts = factsArray.filter(fact => fact && typeof fact === 'object' && typeof fact.confidence === 'number' && fact.confidence >= minConfidence);
 
     if (qualifiedFacts.length === 0) {
       if (logger) {
