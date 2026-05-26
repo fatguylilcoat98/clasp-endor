@@ -88,9 +88,6 @@ async function connectWithRetry(pool, options) {
         attempt: i + 1,
         max: delays.length,
         error_class: describeDbError(err),
-        full_error_message: err.message,
-        error_code: err.code,
-        error_severity: err.severity,
       });
       await sleep(delays[i]);
     }
