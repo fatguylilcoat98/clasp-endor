@@ -12,17 +12,75 @@
     </div>
 
     <main id="app">
-      <section id="setup-card" class="card" aria-labelledby="setup-title">
-        <h1 id="setup-title">Start the Companion</h1>
+      <!-- Sign-in (login) card. Shown first. -->
+      <section id="login-card" class="card" aria-labelledby="login-title">
+        <h1 id="login-title">Sign in</h1>
         <p class="lede">
-          This is a test door. Nothing here is real. Anything you type
-          may be deleted at any time.
+          This is a test door. Each account has its own private memory
+          bubble. Nothing here is real client data.
         </p>
-        <form id="setup-form" autocomplete="off">
-          <label for="name-input">Your name</label>
+        <form id="login-form" autocomplete="on">
+          <label for="login-email">Email</label>
           <input
-            id="name-input"
-            name="name"
+            id="login-email"
+            name="email"
+            type="email"
+            required
+            autocomplete="email"
+            placeholder="you@example.com"
+          />
+
+          <label for="login-password">Password</label>
+          <input
+            id="login-password"
+            name="password"
+            type="password"
+            required
+            autocomplete="current-password"
+            minlength="8"
+          />
+
+          <button id="login-submit" type="submit">Sign in</button>
+          <p id="login-error" class="error-block" role="alert" hidden></p>
+        </form>
+        <p class="card-switch">
+          New here?
+          <button id="show-signup" type="button" class="link-button">Create an account</button>
+        </p>
+      </section>
+
+      <!-- Sign-up card. Hidden initially; user toggles via link. -->
+      <section id="signup-card" class="card" hidden aria-labelledby="signup-title">
+        <h1 id="signup-title">Create an account</h1>
+        <p class="lede">
+          Your account is your private memory bubble. The companion
+          will only remember what you tell it.
+        </p>
+        <form id="signup-form" autocomplete="on">
+          <label for="signup-email">Email</label>
+          <input
+            id="signup-email"
+            name="email"
+            type="email"
+            required
+            autocomplete="email"
+            placeholder="you@example.com"
+          />
+
+          <label for="signup-password">Choose a password (8+ characters)</label>
+          <input
+            id="signup-password"
+            name="password"
+            type="password"
+            required
+            autocomplete="new-password"
+            minlength="8"
+          />
+
+          <label for="signup-displayname">Your name</label>
+          <input
+            id="signup-displayname"
+            name="displayName"
             type="text"
             required
             maxlength="64"
@@ -30,23 +88,11 @@
             placeholder="e.g. Margaret"
           />
 
-          <fieldset id="role-fieldset">
-            <legend>Who are you using as?</legend>
-            <label class="role-option">
-              <input type="radio" name="role" value="regular" checked />
-              <span>Regular user</span>
-            </label>
-            <label class="role-option">
-              <input type="radio" name="role" value="admin" />
-              <span>Admin</span>
-            </label>
-          </fieldset>
-
-          <label for="companion-name-input">
+          <label for="signup-companion-name">
             Companion name (optional)
           </label>
           <input
-            id="companion-name-input"
+            id="signup-companion-name"
             name="companionName"
             type="text"
             maxlength="64"
@@ -54,11 +100,20 @@
             placeholder="e.g. Mable"
           />
 
-          <button id="setup-submit" type="submit">Start Companion</button>
-          <p id="setup-error" class="error-block" role="alert" hidden></p>
+          <button id="signup-submit" type="submit">Create account</button>
+          <p id="signup-error" class="error-block" role="alert" hidden></p>
+          <p id="signup-pending" class="info-block" role="status" hidden>
+            Check your email to confirm your account, then return here
+            to sign in.
+          </p>
         </form>
+        <p class="card-switch">
+          Already have an account?
+          <button id="show-login" type="button" class="link-button">Sign in</button>
+        </p>
       </section>
 
+      <!-- Chat surface. Shown after successful sign-in. -->
       <section id="chat-card" class="card" hidden aria-labelledby="chat-title">
         <header id="chat-header">
           <h1 id="chat-title">Hello, <span id="display-name"></span></h1>

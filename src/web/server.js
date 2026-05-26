@@ -12,18 +12,24 @@
  *   GET  /app.js            → public/app.js
  *   GET  /app.css           → public/app.css
  *   GET  /healthz           → liveness probe (200)
- *   POST /api/setup         → seal session cookie for chosen role
+ *   POST /api/signup        → Supabase signup → JIT-provision user → seal cookie
+ *   POST /api/login         → Supabase login → resolve user → seal cookie
  *   POST /api/chat          → classify + actor.execute (real model)
  *   GET  /api/admin/recent  → ring buffer (admin only)
  *   POST /api/logout        → clear session cookie
  *
  * Hard rules:
  *   - Real user messages are never logged. Only metadata.
+ *   - Passwords are never logged. The request body containing them is
+ *     read once, passed to Supabase, never re-emitted.
  *   - The model response is never logged. Only the character count.
- *   - The session cookie never carries persona or API key.
+ *   - The session cookie never carries persona, API key, or auth token.
+ *     Only { userId, userRole, displayName, companionLabel, issuedAt }.
+ *   - Login / signup failures return uniform errors — no account
+ *     enumeration. supabase-auth.js classifies; we map all "bad
+ *     credentials" cases to the same response.
  *   - Admin-only endpoints fail with 403 for non-admin sessions.
- *   - The mold's substrate is not touched: no DB writes outside the
- *     governed memory chain that the actor already drives.
+ *   - The mold's substrate is not touched.
  */
 
 const http = require('node:http');
@@ -31,19 +37,22 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const {
-  createSessionCodec,
   parseCookieHeader,
   buildSetCookie,
   buildClearCookie,
   COOKIE_NAME,
 } = require('./session');
-const { createRecentBuffer } = require('./recent');
 const { describeErrClass } = require('./wiring');
+const { verifySupabaseJwt } = require('./jwt-verify');
+const { normalizeEmail } = require('./identity');
 
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_MESSAGE_BYTES = 8192;
 const MAX_DISPLAY_NAME_LEN = 64;
 const MAX_COMPANION_LABEL_LEN = 64;
+const MIN_PASSWORD_LEN = 8;
+const MAX_PASSWORD_LEN = 256;
+const SESSION_LIFETIME_SECONDS = 12 * 60 * 60;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const STATIC_FILES = Object.freeze({
@@ -135,10 +144,10 @@ function normalizeCompanionLabel(raw) {
     : trimmed;
 }
 
-function pickUserIdForRole(role, identities) {
-  if (role === 'admin') return identities.adminUserId;
-  if (role === 'regular') return identities.seniorUserId;
-  return null;
+function validatePassword(raw) {
+  if (typeof raw !== 'string') return null;
+  if (raw.length < MIN_PASSWORD_LEN || raw.length > MAX_PASSWORD_LEN) return null;
+  return raw;
 }
 
 function loadStatic(repoRoot, rel) {
@@ -150,32 +159,31 @@ function loadStatic(repoRoot, rel) {
  * createTestDoorServer
  *
  * Options:
- *   repoRoot   — absolute path to the clasp-endor repo root. Used to
- *                resolve public/ static assets.
- *   identities — { pilotInstanceId, seniorUserId, adminUserId }, all
- *                UUIDs. Sourced from env in boot-web; tests pass
- *                literals.
- *   sessionCodec — session.createSessionCodec instance.
- *   wiring     — wiring.createTestDoorWiring instance.
- *   recent     — recent.createRecentBuffer instance.
- *   log        — (level, event, fields) callback.
- *   secureCookie — boolean. When true, the Set-Cookie carries Secure.
- *                  Tests pass false.
+ *   repoRoot           — absolute path to the clasp-endor repo root.
+ *   pilotInstanceId    — UUID of the single test-door pilot.
+ *   sessionCodec       — session.createSessionCodec instance.
+ *   wiring             — wiring.createTestDoorWiring instance.
+ *   recent             — recent.createRecentBuffer instance.
+ *   supabaseAuth       — supabase-auth.createSupabaseAuthClient instance.
+ *   identity           — identity.createIdentityResolver instance.
+ *   supabaseJwtSecret  — HS256 secret used to verify access tokens.
+ *   expectedJwtIssuer  — string, the expected `iss` claim on the JWT.
+ *   log                — (level, event, fields) callback.
+ *   secureCookie       — boolean; tests pass false, production true.
  */
 function createTestDoorServer(options) {
   if (!options || typeof options !== 'object') {
     throw new Error('createTestDoorServer: options object is required');
   }
-  const { repoRoot, identities, sessionCodec, wiring, recent, log } = options;
+  const {
+    repoRoot, pilotInstanceId, sessionCodec, wiring, recent,
+    supabaseAuth, identity, supabaseJwtSecret, expectedJwtIssuer, log,
+  } = options;
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
     throw new Error('createTestDoorServer: repoRoot is required');
   }
-  if (!identities || typeof identities !== 'object') {
-    throw new Error('createTestDoorServer: identities object is required');
-  }
-  const { pilotInstanceId, seniorUserId, adminUserId } = identities;
-  if (!UUID_RE.test(pilotInstanceId) || !UUID_RE.test(seniorUserId) || !UUID_RE.test(adminUserId)) {
-    throw new Error('createTestDoorServer: pilotInstanceId, seniorUserId, adminUserId must all be UUIDs');
+  if (typeof pilotInstanceId !== 'string' || !UUID_RE.test(pilotInstanceId)) {
+    throw new Error('createTestDoorServer: pilotInstanceId must be a UUID');
   }
   if (!sessionCodec || typeof sessionCodec.seal !== 'function') {
     throw new Error('createTestDoorServer: sessionCodec is required');
@@ -185,6 +193,18 @@ function createTestDoorServer(options) {
   }
   if (!recent || typeof recent.record !== 'function') {
     throw new Error('createTestDoorServer: recent buffer is required');
+  }
+  if (!supabaseAuth || typeof supabaseAuth.signup !== 'function' || typeof supabaseAuth.login !== 'function') {
+    throw new Error('createTestDoorServer: supabaseAuth client with signup+login is required');
+  }
+  if (!identity || typeof identity.resolveOrProvision !== 'function') {
+    throw new Error('createTestDoorServer: identity resolver is required');
+  }
+  if (typeof supabaseJwtSecret !== 'string' || supabaseJwtSecret.length < 16) {
+    throw new Error('createTestDoorServer: supabaseJwtSecret is required');
+  }
+  if (typeof expectedJwtIssuer !== 'string' || expectedJwtIssuer.length === 0) {
+    throw new Error('createTestDoorServer: expectedJwtIssuer is required');
   }
   if (typeof log !== 'function') {
     throw new Error('createTestDoorServer: log callback is required');
@@ -197,56 +217,179 @@ function createTestDoorServer(options) {
     return sessionCodec.unseal(raw);
   }
 
-  async function handleSetup(req, res) {
-    const body = await parseJsonBody(req);
-    const displayName = normalizeDisplayName(body.name);
-    if (!displayName) {
-      return jsonResponse(res, 400, { error: 'name is required' });
-    }
-    const role = body.role;
-    if (role !== 'regular' && role !== 'admin') {
-      return jsonResponse(res, 400, { error: 'role must be "regular" or "admin"' });
-    }
-    const companionLabel = normalizeCompanionLabel(body.companionName);
-    const userId = pickUserIdForRole(role, { seniorUserId, adminUserId });
-    const userRole = role === 'admin' ? 'admin' : 'senior';
-
-    const payload = {
-      userId,
-      userRole,
-      displayName,
-      companionLabel,
-      issuedAt: Date.now(),
-    };
+  function buildSessionCookie(payload) {
     const cookieValue = sessionCodec.seal(payload);
-    const setCookie = buildSetCookie(COOKIE_NAME, cookieValue, {
-      maxAgeSeconds: 12 * 60 * 60,
+    return buildSetCookie(COOKIE_NAME, cookieValue, {
+      maxAgeSeconds: SESSION_LIFETIME_SECONDS,
       secure: secureCookie,
     });
+  }
 
-    log('info', 'web.setup', {
-      role: userRole,
-      display_name_chars: displayName.length,
-      companion_label_chars: companionLabel ? companionLabel.length : 0,
+  /*
+   * sealAndRespond:
+   * given a verified auth identity + caller-supplied profile fields,
+   * resolve / JIT-provision the public.users row, seal the session
+   * cookie, and respond. Shared by /api/signup and /api/login.
+   *
+   * Failure-uniformity rule: any failure inside the identity step
+   * surfaces as a single coarse 502 "internal" — we do not surface
+   * which step failed to the browser.
+   */
+  async function sealAndRespond({
+    res, eventType, authUserId, email, displayName, companionLabel, confirmationPending,
+  }) {
+    if (confirmationPending) {
+      // Email-confirmation required — Supabase issued no access_token,
+      // so we cannot resolve the public.users row yet. The user must
+      // confirm their email and then log in.
+      log('info', `${eventType}.pending_confirmation`, {
+        pilot_instance_id: pilotInstanceId,
+      });
+      return jsonResponse(res, 200, {
+        ok: true,
+        confirmationPending: true,
+        message: 'Check your email to confirm your account, then log in.',
+      });
+    }
+
+    let resolved;
+    try {
+      resolved = await identity.resolveOrProvision({ authUserId, email });
+    } catch (err) {
+      log('warn', `${eventType}.identity_failed`, {
+        error_class: describeErrClass(err),
+      });
+      return jsonResponse(res, 502, { error: 'unable to complete sign-in' });
+    }
+
+    const cookie = buildSessionCookie({
+      userId: resolved.userId,
+      userRole: resolved.userRole,
+      displayName: displayName || resolved.displayName,
+      companionLabel,
+      issuedAt: Date.now(),
+    });
+
+    log('info', `${eventType}.completed`, {
+      pilot_instance_id: pilotInstanceId,
+      user_id: resolved.userId,
+      role: resolved.userRole,
+      is_new_user: resolved.isNewUser,
     });
 
     return jsonResponse(
-      res,
-      200,
+      res, 200,
       {
-        displayName,
-        userRole,
+        ok: true,
+        confirmationPending: false,
+        displayName: displayName || resolved.displayName,
+        userRole: resolved.userRole,
         companionLabel,
-        isAdmin: userRole === 'admin',
+        isAdmin: resolved.userRole === 'admin',
+        isNewUser: resolved.isNewUser,
       },
-      { 'Set-Cookie': setCookie }
+      { 'Set-Cookie': cookie }
     );
+  }
+
+  async function handleSignup(req, res) {
+    const body = await parseJsonBody(req);
+    const email = normalizeEmail(body.email);
+    const password = validatePassword(body.password);
+    const displayName = normalizeDisplayName(body.displayName);
+    const companionLabel = normalizeCompanionLabel(body.companionName);
+
+    if (!email || !password) {
+      // Uniform "invalid input" error. Do not specify which field.
+      return jsonResponse(res, 400, { error: 'email and password are required (password must be 8+ chars)' });
+    }
+    if (!displayName) {
+      return jsonResponse(res, 400, { error: 'displayName is required' });
+    }
+
+    const auth = await supabaseAuth.signup({ email, password });
+    if (!auth.ok) {
+      if (auth.code === 'rate_limited') {
+        return jsonResponse(res, 429, { error: 'too many requests, try again in a minute' });
+      }
+      if (auth.code === 'unavailable') {
+        return jsonResponse(res, 502, { error: 'sign-in service unavailable, try again' });
+      }
+      // For user_exists and invalid_credentials, return a uniform
+      // generic error. Do NOT surface "this email already exists" —
+      // that's an enumeration vector.
+      log('info', 'web.signup.rejected', { code: auth.code });
+      return jsonResponse(res, 400, { error: 'could not create account with that email and password' });
+    }
+
+    return sealAndRespond({
+      res,
+      eventType: 'web.signup',
+      authUserId: auth.userId,
+      email: auth.email || email,
+      displayName,
+      companionLabel,
+      confirmationPending: !!auth.confirmationPending,
+    });
+  }
+
+  async function handleLogin(req, res) {
+    const body = await parseJsonBody(req);
+    const email = normalizeEmail(body.email);
+    const password = validatePassword(body.password);
+    const displayName = normalizeDisplayName(body.displayName); // optional override
+
+    if (!email || !password) {
+      return jsonResponse(res, 400, { error: 'email and password are required' });
+    }
+
+    const auth = await supabaseAuth.login({ email, password });
+    if (!auth.ok) {
+      if (auth.code === 'rate_limited') {
+        return jsonResponse(res, 429, { error: 'too many requests, try again in a minute' });
+      }
+      if (auth.code === 'unavailable') {
+        return jsonResponse(res, 502, { error: 'sign-in service unavailable, try again' });
+      }
+      log('info', 'web.login.rejected', { code: auth.code });
+      // Uniform error — same response for missing account vs wrong
+      // password, no enumeration.
+      return jsonResponse(res, 401, { error: 'invalid email or password' });
+    }
+
+    // Verify the access_token's signature locally before trusting
+    // the user identity. Belt-and-suspenders: Supabase already gave
+    // us the user.id, but verifying the JWT we received proves the
+    // response wasn't tampered with in transit.
+    try {
+      const claims = verifySupabaseJwt(auth.accessToken, {
+        secret: supabaseJwtSecret,
+        expectedIssuer: expectedJwtIssuer,
+      });
+      if (claims.sub !== auth.userId) {
+        log('warn', 'web.login.jwt_user_mismatch', {});
+        return jsonResponse(res, 401, { error: 'invalid email or password' });
+      }
+    } catch (err) {
+      log('warn', 'web.login.jwt_verification_failed', { error_class: describeErrClass(err) });
+      return jsonResponse(res, 401, { error: 'invalid email or password' });
+    }
+
+    return sealAndRespond({
+      res,
+      eventType: 'web.login',
+      authUserId: auth.userId,
+      email: auth.email || email,
+      displayName,
+      companionLabel: null,
+      confirmationPending: false,
+    });
   }
 
   async function handleChat(req, res) {
     const session = getSession(req);
     if (!session) {
-      return jsonResponse(res, 401, { error: 'no session — complete setup first' });
+      return jsonResponse(res, 401, { error: 'no session — sign in first' });
     }
     const body = await parseJsonBody(req);
     const userMessage = typeof body.message === 'string' ? body.message : '';
@@ -262,7 +405,6 @@ function createTestDoorServer(options) {
 
     let bundle;
     try {
-      // Build companion configuration from session
       const companionConfig = {
         name: session.companionLabel || 'Assistant',
         persona: 'You are a helpful and friendly AI companion.'
@@ -332,9 +474,6 @@ function createTestDoorServer(options) {
       reason: bundle.reason,
       policyRef: bundle.policyRef,
       executed: bundle.executed,
-      // Brain-runtime audit + memory-writer fields. The wiring builds
-      // these; the UI's gov panel reads them. Omitting them here
-      // silently hides the audit verdict from the operator panel.
       auditVerdict: bundle.auditVerdict,
       auditDetails: bundle.auditDetails,
       auditReason: bundle.auditReason,
@@ -346,7 +485,7 @@ function createTestDoorServer(options) {
   function handleAdminRecent(req, res) {
     const session = getSession(req);
     if (!session) {
-      return jsonResponse(res, 401, { error: 'no session — complete setup first' });
+      return jsonResponse(res, 401, { error: 'no session — sign in first' });
     }
     if (session.userRole !== 'admin') {
       return jsonResponse(res, 403, { error: 'admin role required' });
@@ -395,9 +534,10 @@ function createTestDoorServer(options) {
       if (stat) return handleStatic(stat.rel, stat.type, res);
     }
 
-    if (method === 'POST' && pathname === '/api/setup') return handleSetup(req, res);
-    if (method === 'POST' && pathname === '/api/chat') return handleChat(req, res);
-    if (method === 'GET' && pathname === '/api/admin/recent') return handleAdminRecent(req, res);
+    if (method === 'POST' && pathname === '/api/signup') return handleSignup(req, res);
+    if (method === 'POST' && pathname === '/api/login')  return handleLogin(req, res);
+    if (method === 'POST' && pathname === '/api/chat')   return handleChat(req, res);
+    if (method === 'GET'  && pathname === '/api/admin/recent') return handleAdminRecent(req, res);
     if (method === 'POST' && pathname === '/api/logout') return handleLogout(req, res);
 
     return jsonResponse(res, 404, { error: 'not found' });

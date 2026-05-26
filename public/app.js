@@ -3,13 +3,28 @@
 
 (function () {
   const el = {
-    setupCard:        document.getElementById('setup-card'),
-    setupForm:        document.getElementById('setup-form'),
-    setupSubmit:      document.getElementById('setup-submit'),
-    setupError:       document.getElementById('setup-error'),
-    nameInput:        document.getElementById('name-input'),
-    companionInput:   document.getElementById('companion-name-input'),
+    // Login card
+    loginCard:        document.getElementById('login-card'),
+    loginForm:        document.getElementById('login-form'),
+    loginEmail:       document.getElementById('login-email'),
+    loginPassword:    document.getElementById('login-password'),
+    loginSubmit:      document.getElementById('login-submit'),
+    loginError:       document.getElementById('login-error'),
+    showSignup:       document.getElementById('show-signup'),
 
+    // Signup card
+    signupCard:       document.getElementById('signup-card'),
+    signupForm:       document.getElementById('signup-form'),
+    signupEmail:      document.getElementById('signup-email'),
+    signupPassword:   document.getElementById('signup-password'),
+    signupDisplay:    document.getElementById('signup-displayname'),
+    signupCompanion:  document.getElementById('signup-companion-name'),
+    signupSubmit:     document.getElementById('signup-submit'),
+    signupError:      document.getElementById('signup-error'),
+    signupPending:    document.getElementById('signup-pending'),
+    showLogin:        document.getElementById('show-login'),
+
+    // Chat card
     chatCard:         document.getElementById('chat-card'),
     displayName:      document.getElementById('display-name'),
     companionLabelOut:document.getElementById('companion-label-display'),
@@ -27,23 +42,10 @@
     adminTbody:       document.getElementById('admin-tbody'),
   };
 
-  function setText(node, text) {
-    node.textContent = text;
-  }
-
-  function showError(node, message) {
-    node.textContent = message;
-    node.hidden = false;
-  }
-
-  function clearError(node) {
-    node.textContent = '';
-    node.hidden = true;
-  }
-
-  function isAdminRole(userRole) {
-    return userRole === 'admin';
-  }
+  function setText(node, text) { node.textContent = text; }
+  function showError(node, message) { node.textContent = message; node.hidden = false; }
+  function clearError(node) { node.textContent = ''; node.hidden = true; }
+  function isAdminRole(userRole) { return userRole === 'admin'; }
 
   async function postJson(url, body) {
     const res = await fetch(url, {
@@ -64,6 +66,108 @@
     return { ok: res.ok, status: res.status, body: payload };
   }
 
+  // ---------- Auth toggles ----------
+  function showLoginCard() {
+    el.loginCard.hidden = false;
+    el.signupCard.hidden = true;
+    el.chatCard.hidden = true;
+    clearError(el.loginError);
+    el.signupPending.hidden = true;
+  }
+
+  function showSignupCard() {
+    el.loginCard.hidden = true;
+    el.signupCard.hidden = false;
+    el.chatCard.hidden = true;
+    clearError(el.signupError);
+    el.signupPending.hidden = true;
+  }
+
+  function showChatCard(authResponse) {
+    el.loginCard.hidden = true;
+    el.signupCard.hidden = true;
+    el.chatCard.hidden = false;
+    setText(el.displayName, authResponse.displayName || authResponse.email || 'you');
+    setText(
+      el.companionLabelOut,
+      authResponse.companionLabel ? authResponse.companionLabel : 'unnamed companion'
+    );
+    if (isAdminRole(authResponse.userRole)) {
+      el.adminCard.hidden = false;
+      refreshAdmin();
+    } else {
+      el.adminCard.hidden = true;
+    }
+    el.messageInput.focus();
+  }
+
+  // ---------- Auth submit handlers ----------
+  async function onLoginSubmit(event) {
+    event.preventDefault();
+    clearError(el.loginError);
+    el.loginSubmit.disabled = true;
+    try {
+      const email = el.loginEmail.value.trim();
+      const password = el.loginPassword.value;
+      if (!email || !password) {
+        showError(el.loginError, 'Email and password are required.');
+        return;
+      }
+      const r = await postJson('/api/login', { email, password });
+      if (!r.ok) {
+        // Uniform error per server.js — never leaks "no such account"
+        showError(el.loginError, (r.body && r.body.error) || ('Sign-in failed (' + r.status + ').'));
+        return;
+      }
+      // Clear password field before navigating away
+      el.loginPassword.value = '';
+      showChatCard(r.body);
+    } catch (err) {
+      showError(el.loginError, 'Network error. Try again.');
+    } finally {
+      el.loginSubmit.disabled = false;
+    }
+  }
+
+  async function onSignupSubmit(event) {
+    event.preventDefault();
+    clearError(el.signupError);
+    el.signupPending.hidden = true;
+    el.signupSubmit.disabled = true;
+    try {
+      const email = el.signupEmail.value.trim();
+      const password = el.signupPassword.value;
+      const displayName = el.signupDisplay.value.trim();
+      const companionName = el.signupCompanion.value.trim() || null;
+      if (!email || !password || !displayName) {
+        showError(el.signupError, 'Email, password, and your name are all required.');
+        return;
+      }
+      if (password.length < 8) {
+        showError(el.signupError, 'Password must be at least 8 characters.');
+        return;
+      }
+      const r = await postJson('/api/signup', { email, password, displayName, companionName });
+      if (!r.ok) {
+        showError(el.signupError, (r.body && r.body.error) || ('Sign-up failed (' + r.status + ').'));
+        return;
+      }
+      // Clear password field for safety
+      el.signupPassword.value = '';
+      if (r.body && r.body.confirmationPending) {
+        // Server says: check your email, then sign in.
+        el.signupPending.hidden = false;
+        return;
+      }
+      showChatCard(r.body);
+    } catch (err) {
+      showError(el.signupError, 'Network error. Try again.');
+    } finally {
+      el.signupSubmit.disabled = false;
+    }
+  }
+
+  // ---------- Chat ----------
   function renderUserMessage(text) {
     const wrap = document.createElement('div');
     wrap.className = 'message user';
@@ -86,7 +190,6 @@
   function renderGovPanel(g) {
     const details = document.createElement('details');
     details.className = 'gov-panel';
-
     const summary = document.createElement('summary');
     const status = g.outcome || 'unknown';
     const auditStatus = g.auditVerdict && g.auditVerdict !== 'N/A' ? ` · audit ${g.auditVerdict.toLowerCase()}` : '';
@@ -101,14 +204,9 @@
     appendKv(dl, 'policyRef',    String(g.policyRef || '—'));
     appendKv(dl, 'intentType',   String(g.intentType || '—'));
     appendKv(dl, 'outcome',      String(g.outcome || '—'));
-    appendKv(dl, 'staged?',      g.outcome === 'staged' ? 'yes' : 'no');
-    appendKv(dl, 'rejected?',    g.outcome === 'rejected' ? 'yes' : 'no');
-    appendKv(dl, 'allowed?',     g.outcome === 'executed' ? 'yes' : 'no');
     if (g.auditVerdict && g.auditVerdict !== 'N/A') {
       appendKv(dl, 'auditVerdict', String(g.auditVerdict));
-      if (g.auditReason) {
-        appendKv(dl, 'auditReason', String(g.auditReason));
-      }
+      if (g.auditReason) appendKv(dl, 'auditReason', String(g.auditReason));
     }
     if (g.memoriesStored != null || g.factsExtracted != null) {
       appendKv(dl, 'memoriesStored', String(g.memoriesStored || 0));
@@ -127,49 +225,6 @@
     dl.appendChild(dd);
   }
 
-  async function onSetupSubmit(event) {
-    event.preventDefault();
-    clearError(el.setupError);
-    el.setupSubmit.disabled = true;
-    try {
-      const name = el.nameInput.value.trim();
-      const companionName = el.companionInput.value.trim();
-      const roleNode = document.querySelector('input[name="role"]:checked');
-      const role = roleNode ? roleNode.value : 'regular';
-      if (!name) {
-        showError(el.setupError, 'Please enter your name.');
-        return;
-      }
-      const r = await postJson('/api/setup', { name, role, companionName });
-      if (!r.ok) {
-        showError(el.setupError, (r.body && r.body.error) || ('Setup failed (' + r.status + ').'));
-        return;
-      }
-      enterChatMode(r.body);
-    } catch (err) {
-      showError(el.setupError, 'Network error. Check the server and try again.');
-    } finally {
-      el.setupSubmit.disabled = false;
-    }
-  }
-
-  function enterChatMode(setup) {
-    setText(el.displayName, setup.displayName);
-    setText(
-      el.companionLabelOut,
-      setup.companionLabel ? setup.companionLabel : 'unnamed companion'
-    );
-    el.setupCard.hidden = true;
-    el.chatCard.hidden = false;
-    if (isAdminRole(setup.userRole)) {
-      el.adminCard.hidden = false;
-      refreshAdmin();
-    } else {
-      el.adminCard.hidden = true;
-    }
-    el.messageInput.focus();
-  }
-
   async function onChatSubmit(event) {
     event.preventDefault();
     clearError(el.chatError);
@@ -182,6 +237,12 @@
     try {
       const r = await postJson('/api/chat', { message });
       if (!r.ok) {
+        if (r.status === 401) {
+          // Session lapsed — kick back to login.
+          showError(el.chatError, 'Your session expired. Please sign in again.');
+          showLoginCard();
+          return;
+        }
         const errMsg = (r.body && r.body.error) || ('Chat failed (' + r.status + ').');
         showError(el.chatError, errMsg);
         renderCompanionMessage('[no response — see error above]', {
@@ -203,6 +264,10 @@
         policyRef: b.policyRef,
         intentType: b.intentType,
         memoryCount: b.memoryCount,
+        auditVerdict: b.auditVerdict,
+        auditReason: b.auditReason,
+        memoriesStored: b.memoriesStored,
+        factsExtracted: b.factsExtracted,
       });
       if (!el.adminCard.hidden) refreshAdmin();
     } catch (err) {
@@ -247,13 +312,15 @@
   }
 
   async function onLogout() {
-    try {
-      await postJson('/api/logout', {});
-    } catch (e) { /* swallow */ }
+    try { await postJson('/api/logout', {}); } catch (e) { /* swallow */ }
     window.location.reload();
   }
 
-  el.setupForm.addEventListener('submit', onSetupSubmit);
+  // Wire events
+  el.loginForm.addEventListener('submit', onLoginSubmit);
+  el.signupForm.addEventListener('submit', onSignupSubmit);
+  el.showSignup.addEventListener('click', showSignupCard);
+  el.showLogin.addEventListener('click', showLoginCard);
   el.chatForm.addEventListener('submit', onChatSubmit);
   el.adminRefresh.addEventListener('click', refreshAdmin);
   el.logoutButton.addEventListener('click', onLogout);
