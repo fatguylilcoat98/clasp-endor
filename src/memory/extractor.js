@@ -117,6 +117,44 @@ function extractWithPatterns(userMessage) {
       pattern: /i\s+(?:really\s+)?(?:hate|dislike|can't\s+stand|don't\s+like)\s+(.+?)(?:[,.!?]|$)/i,
       extract: (match) => `User dislikes ${match[1].trim()}`,
       confidence: 0.6
+    },
+
+    // Corrections and negations (high confidence)
+    {
+      pattern: /(?:that's\s+(?:wrong|incorrect|not\s+right)|i\s+was\s+wrong|(?:no|nope),?\s+(?:i\s+)?(?:don't|do\s+not))\s+(?:have|own)\s+(?:a\s+|an\s+)?(.+?)(?:[,.!?]|$)/i,
+      extract: (match) => `CORRECTION: User does not have ${match[1].trim()}`,
+      confidence: 0.9
+    },
+    {
+      pattern: /^(?:i\s+)?(?:don't|do\s+not)\s+(?:have|own)\s+(?:a\s+|an\s+)?(.+?)(?:[,.!?]|$)/i,
+      extract: (match) => `CORRECTION: User does not have ${match[1].trim()}`,
+      confidence: 0.85
+    },
+    {
+      pattern: /(?:actually,?\s+)?(?:i\s+)?(?:don't|do\s+not|never)\s+(?:have|own)\s+(?:a\s+|an\s+)?(brother|sister|wife|husband|partner|mother|father|mom|dad|son|daughter)(?:\s+(?:named\s+|called\s+)?(.+?))?(?:[,.!?]|$)/i,
+      extract: (match) => {
+        if (match[2]) {
+          return `CORRECTION: User does not have ${match[1]} named ${match[2].trim()}`;
+        } else {
+          return `CORRECTION: User does not have ${match[1]}`;
+        }
+      },
+      confidence: 0.95
+    },
+    {
+      pattern: /(?:forget|ignore)\s+(?:what\s+i\s+said\s+about|that\s+i\s+mentioned)\s+(.+?)(?:[,.!?]|$)/i,
+      extract: (match) => `RETRACTION: Ignore previous statements about ${match[1].trim()}`,
+      confidence: 0.9
+    },
+    {
+      pattern: /(?:that's\s+(?:wrong|incorrect|not\s+true)|i\s+misspoke|i\s+made\s+a\s+mistake)(?:\s*[,.]?\s*)?(.+?)(?:[,.!?]|$)/i,
+      extract: (match) => `CORRECTION: Previous statement about ${match[1].trim()} was incorrect`,
+      confidence: 0.85
+    },
+    {
+      pattern: /(?:actually,?\s+)?(?:i\s+)?(?:don't|do\s+not|never)\s+(?:like|enjoy|love|prefer)\s+(.+?)(?:[,.!?]|$)/i,
+      extract: (match) => `CORRECTION: User does not like ${match[1].trim()}`,
+      confidence: 0.8
     }
   ];
 

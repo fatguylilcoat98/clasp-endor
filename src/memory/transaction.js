@@ -62,7 +62,7 @@ function validateContext(ctx) {
   }
 }
 
-const { listVisibleMemories, insertPrivateMemory } = require('./repository');
+const { listVisibleMemories, insertPrivateMemory, promoteMemoryToVerified, findWorkingMemoriesByContent, findActiveMemoriesContaining, deactivateMemory } = require('./repository');
 
 function buildCtx(client, sessionCtx) {
   return {
@@ -71,6 +71,10 @@ function buildCtx(client, sessionCtx) {
     userRole: sessionCtx.userRole,
     listVisibleMemories: (opts) => listVisibleMemories(client, sessionCtx, opts),
     insertPrivateMemory: (input) => insertPrivateMemory(client, sessionCtx, input),
+    promoteMemoryToVerified: (memoryId, reason) => promoteMemoryToVerified(client, sessionCtx, memoryId, reason),
+    findWorkingMemoriesByContent: (contentArray) => findWorkingMemoriesByContent(client, sessionCtx, contentArray),
+    findActiveMemoriesContaining: (searchText) => findActiveMemoriesContaining(client, sessionCtx, searchText),
+    deactivateMemory: (memoryId, reason) => deactivateMemory(client, sessionCtx, memoryId, reason),
   };
 }
 

@@ -116,9 +116,119 @@ async function insertPrivateMemory(client, sessionCtx, input) {
   };
 }
 
+async function promoteMemoryToVerified(client, sessionCtx, memoryId, reason) {
+  if (typeof memoryId !== 'string') {
+    throw new Error('promoteMemoryToVerified: memoryId must be a string');
+  }
+
+  // Update memory status to VERIFIED
+  await client.query(
+    `UPDATE memory_store
+     SET memory_status = 'VERIFIED', updated_at = NOW()
+     WHERE id = $1 AND pilot_instance_id = $2 AND owning_user_id = $3`,
+    [memoryId, sessionCtx.pilotInstanceId, sessionCtx.userId]
+  );
+
+  // Log the promotion
+  await insertAuditEvent(client, sessionCtx, {
+    eventType: EVENT_TYPES.MEMORY_UPDATED,
+    outcome: 'allowed',
+    memoryId,
+    targetUserId: sessionCtx.userId,
+    reason: reason || 'promoted to VERIFIED'
+  });
+
+  return { id: memoryId, promotedAt: new Date() };
+}
+
+async function findWorkingMemoriesByContent(client, sessionCtx, contentArray) {
+  if (!Array.isArray(contentArray) || contentArray.length === 0) {
+    return [];
+  }
+
+  const placeholders = contentArray.map((_, i) => `$${i + 3}`).join(', ');
+  const query = `
+    SELECT id, content, created_at
+    FROM memory_store
+    WHERE pilot_instance_id = $1
+      AND owning_user_id = $2
+      AND content IN (${placeholders})
+      AND memory_status = 'WORKING_ACTIVE'
+      AND active = true
+    ORDER BY created_at DESC
+  `;
+
+  const params = [sessionCtx.pilotInstanceId, sessionCtx.userId, ...contentArray];
+  const result = await client.query(query, params);
+  return result.rows;
+}
+
+async function findActiveMemoriesContaining(client, sessionCtx, searchText) {
+  if (!searchText || typeof searchText !== 'string') {
+    return [];
+  }
+
+  const query = `
+    SELECT id, content, created_at, memory_status
+    FROM memory_store
+    WHERE pilot_instance_id = $1
+      AND owning_user_id = $2
+      AND content ILIKE $3
+      AND active = true
+    ORDER BY created_at DESC
+  `;
+
+  const params = [sessionCtx.pilotInstanceId, sessionCtx.userId, `%${searchText}%`];
+  const result = await client.query(query, params);
+  return result.rows;
+}
+
+async function deactivateMemory(client, sessionCtx, memoryId, reason) {
+  if (!memoryId || typeof memoryId !== 'string') {
+    throw new Error('deactivateMemory: memoryId is required');
+  }
+
+  if (!reason || typeof reason !== 'string') {
+    throw new Error('deactivateMemory: reason is required');
+  }
+
+  const query = `
+    UPDATE memory_store
+    SET active = false,
+        memory_status = 'SUPERSEDED',
+        updated_at = NOW()
+    WHERE pilot_instance_id = $1
+      AND owning_user_id = $2
+      AND id = $3
+      AND active = true
+    RETURNING id, updated_at
+  `;
+
+  const params = [sessionCtx.pilotInstanceId, sessionCtx.userId, memoryId];
+  const result = await client.query(query, params);
+
+  if (result.rows.length === 0) {
+    throw new Error('deactivateMemory: memory not found or already deactivated');
+  }
+
+  // Audit the deactivation
+  await insertAuditEvent(client, sessionCtx, EVENT_TYPES.MEMORY_UPDATED, {
+    memory_id: memoryId,
+    action: 'deactivated',
+    reason: reason,
+    status_change: 'active->inactive'
+  });
+
+  return { id: memoryId, deactivatedAt: result.rows[0].updated_at };
+}
+
 module.exports = {
   listVisibleMemories,
   insertPrivateMemory,
+  promoteMemoryToVerified,
+  findWorkingMemoriesByContent,
+  findActiveMemoriesContaining,
+  deactivateMemory,
   VALID_PROVENANCE,
   MAX_CONTENT_LENGTH,
 };
