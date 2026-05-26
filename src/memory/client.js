@@ -28,8 +28,21 @@ const { describeErrorClass } = require('./errors');
 const fs = require('fs');
 const path = require('path');
 
-// SSL configuration for Supabase connections
-function getSSLConfig() {
+// SSL configuration for Supabase connections. Only applied to
+// non-local hosts — see src/db/client.js for the rationale.
+function isLocalConnectionUrl(databaseUrl) {
+  if (typeof databaseUrl !== 'string' || databaseUrl.length === 0) return false;
+  try {
+    const u = new URL(databaseUrl);
+    const host = u.hostname.replace(/^\[|\]$/g, '');
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  } catch {
+    return false;
+  }
+}
+
+function getSSLConfig(databaseUrl) {
+  if (isLocalConnectionUrl(databaseUrl)) return undefined;
   const caCertPath = process.env.DB_CA_CERT_PATH || path.join(__dirname, '..', '..', 'certs', 'supabase-ca.crt');
   try {
     const ca = fs.readFileSync(caCertPath, 'utf8');
@@ -38,7 +51,7 @@ function getSSLConfig() {
       ca: ca,
     };
   } catch (err) {
-    // Fall back to no SSL config for local development
+    // Fall back to no SSL config when the cert file is missing.
     return undefined;
   }
 }
@@ -64,7 +77,7 @@ function createMemoryPool(databaseUrl, options) {
   }
   const opts = options || {};
   const log = opts.log || (() => {});
-  const sslConfig = getSSLConfig();
+  const sslConfig = getSSLConfig(databaseUrl);
   const pool = new Pool({
     connectionString: databaseUrl,
     ssl: sslConfig,

@@ -24,6 +24,28 @@ const SAFE_ENV_VALUES = new Set([
   '', 'true', 'false', 'development', 'production', 'test',
 ]);
 
+// Postgres / generic URLs that embed a password between user: and @host.
+// We hard-fail on any host that isn't an obvious local-or-placeholder
+// form. Excluded hosts are:
+//   - localhost, 127.0.0.1, ::1     (test fixtures, CI services)
+//   - HOST (uppercase placeholder)  (the operator runbook examples)
+// Password slots that are obvious placeholders (PASSWORD, password,
+// test, postgres, x, y) still fail when paired with a non-local host —
+// because the host itself indicates production reach. Restrict the
+// allowed test-password vocabulary to local hosts only.
+const PG_URL_RE = /\b(?:postgres|postgresql):\/\/([^\s:'"@\/]+):([^\s'"@\/]+)@([^\s'":\/]+)/g;
+const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '::1', 'HOST']);
+
+function findDbUrlSecrets(content) {
+  const hits = [];
+  for (const m of content.matchAll(PG_URL_RE)) {
+    const host = m[3];
+    if (ALLOWED_HOSTS.has(host)) continue;
+    hits.push({ user: m[1], host });
+  }
+  return hits;
+}
+
 const SECRET_PATTERNS = [
   { name: 'private-key block', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
   { name: 'Anthropic-style key', re: /sk-ant-[A-Za-z0-9_-]{16,}/ },
@@ -84,6 +106,17 @@ for (const f of all) {
     if (pattern.re.test(content)) {
       errors.push(`${f}: contains a ${pattern.name} — secrets must never be committed`);
     }
+  }
+
+  // 3b. Postgres/Supabase URLs with embedded passwords pointing at a
+  //     remote host. Local placeholders are excluded; remote hosts are
+  //     always treated as a leak even if the embedded "password" looks
+  //     fake — once the host is real, the credential is too.
+  const dbHits = findDbUrlSecrets(content);
+  for (const hit of dbHits) {
+    errors.push(
+      `${f}: postgres URL with embedded credential reaches remote host "${hit.host}" — never commit a real DB URL`
+    );
   }
 }
 

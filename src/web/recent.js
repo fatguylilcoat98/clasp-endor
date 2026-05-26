@@ -47,6 +47,13 @@ function createRecentBuffer(options) {
       memoryCount: safeNumber(input.memoryCount),
       responseChars: safeNumber(input.responseChars),
       errorClass: safeString(input.errorClass, 32),
+      // Brain-runtime metadata, added 9b2d199-era. Tokens only —
+      // the audit reason can echo memory content, so reason is NOT
+      // recorded here (the auditor's PASS/FAIL verdict is enough
+      // for the admin panel).
+      auditVerdict: safeString(input.auditVerdict, 8),
+      memoriesStored: safeNumber(input.memoriesStored),
+      factsExtracted: safeNumber(input.factsExtracted),
     });
     entries.push(entry);
     while (entries.length > capacity) entries.shift();

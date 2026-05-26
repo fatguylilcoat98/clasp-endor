@@ -51,7 +51,15 @@ function fakeModelClient(textOrThrow) {
 const { classifyExecutionIntent, INTENT_TYPES } = require('../../src/governance');
 const { createResponseDeliveryActor } = require('../../src/actors');
 
-function buildStubWiring(textOrError) {
+// buildStubWiring mirrors what src/web/wiring.js produces, including the
+// post-9b2d199 fields (auditVerdict, auditDetails, auditReason,
+// memoriesStored, factsExtracted). The real wiring is exercised in
+// integration tests (tests/integration/); this stub keeps the HTTP
+// surface tests hermetic — no real model, no real DB.
+function buildStubWiring(textOrError, opts) {
+  const o = opts || {};
+  const auditFields = o.audit || { verdict: 'PASS', details: 'audit-disabled' };
+  const memoryFields = o.memory || { stored: 0, extracted: 0 };
   const conversationRuntime = {
     respond: async (input) => {
       assert.equal(input.pilotInstanceId, PILOT_UUID);
@@ -59,7 +67,13 @@ function buildStubWiring(textOrError) {
       assert.ok(input.userRole === 'senior' || input.userRole === 'admin');
       assert.equal(typeof input.userMessage, 'string');
       if (textOrError instanceof Error) throw textOrError;
-      return { response: textOrError, memoryCount: 3 };
+      return {
+        response: textOrError,
+        memoryCount: 3,
+        auditVerdict: auditFields.verdict,
+        auditDetails: auditFields.details,
+        auditReason: auditFields.reason,
+      };
     },
   };
   const actor = createResponseDeliveryActor({ conversationRuntime });
@@ -75,6 +89,11 @@ function buildStubWiring(textOrError) {
         policyRef: result.decision.policyRef,
         response: result.response,
         memoryCount: result.memoryCount,
+        auditVerdict: auditFields.verdict || 'N/A',
+        auditDetails: auditFields.details || 'no-audit',
+        auditReason: auditFields.reason,
+        memoriesStored: memoryFields.stored,
+        factsExtracted: memoryFields.extracted,
       };
       bundle.executed = bundle.outcome === 'executed';
       return bundle;
@@ -83,11 +102,11 @@ function buildStubWiring(textOrError) {
   };
 }
 
-function startServer(stubWiringText) {
+function startServer(stubWiringText, stubOpts) {
   const sessionCodec = createSessionCodec({ secret: SECRET });
   const recent = createRecentBuffer({ capacity: 5 });
   const { log, lines } = captureLog();
-  const wiring = buildStubWiring(stubWiringText);
+  const wiring = buildStubWiring(stubWiringText, stubOpts);
   const server = createTestDoorServer({
     repoRoot: REPO_ROOT,
     identities: {
@@ -390,6 +409,55 @@ test('session codec round-trips and rejects tampered cookies', async () => {
 
   const wrongSecret = createSessionCodec({ secret: 'different-secret-of-length' });
   assert.equal(wrongSecret.unseal(sealed), null);
+});
+
+test('POST /api/chat passes brain-runtime audit fields through to the HTTP response', async () => {
+  const ctx = await startServer('hello there', {
+    audit: { verdict: 'PASS', details: 'groq-audit-completed', reason: 'consistent with memories' },
+    memory: { stored: 2, extracted: 3 },
+  });
+  try {
+    const setup = await req(ctx.port, 'POST', '/api/setup', {
+      body: { name: 'Margaret', role: 'regular' },
+    });
+    const cookie = cookieFromRes(setup);
+    const res = await req(ctx.port, 'POST', '/api/chat', {
+      headers: { Cookie: cookie },
+      body: { message: 'How are you?' },
+    });
+    assert.equal(res.statusCode, 200);
+    // wiring.js bundles these fields after the actor returns; the
+    // server's handleChat passes the whole bundle as JSON.
+    assert.equal(res.body.auditVerdict || 'N/A', 'PASS');
+    assert.equal(res.body.auditDetails || 'no-audit', 'groq-audit-completed');
+    assert.equal(res.body.auditReason, 'consistent with memories');
+    assert.equal(res.body.memoriesStored, 2);
+    assert.equal(res.body.factsExtracted, 3);
+  } finally {
+    ctx.server.close();
+  }
+});
+
+test('POST /api/chat passes audit FAIL verdict + reason through', async () => {
+  const ctx = await startServer('the response that the auditor disliked', {
+    audit: { verdict: 'FAIL', details: 'groq-audit-completed', reason: 'response asserts a fact not in memories' },
+    memory: { stored: 0, extracted: 0 },
+  });
+  try {
+    const setup = await req(ctx.port, 'POST', '/api/setup', {
+      body: { name: 'A', role: 'regular' },
+    });
+    const cookie = cookieFromRes(setup);
+    const res = await req(ctx.port, 'POST', '/api/chat', {
+      headers: { Cookie: cookie },
+      body: { message: 'what do you remember about me?' },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.auditVerdict, 'FAIL');
+    assert.match(res.body.auditReason, /not in memories/);
+  } finally {
+    ctx.server.close();
+  }
 });
 
 test('createTestDoorWiring rejects missing ANTHROPIC_API_KEY when no modelClient override', () => {

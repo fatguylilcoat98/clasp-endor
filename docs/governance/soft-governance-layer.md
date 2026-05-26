@@ -1,6 +1,6 @@
 # Soft Governance Layer
 
-**Applies to:** All companion interactions and decision-making processes  
+**Applies to:** All companion interactions and decision-making processes
 **Purpose:** Define the core principles and values that guide companion behavior beyond technical constraints
 
 ## Core Principles

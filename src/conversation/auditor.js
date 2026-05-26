@@ -47,8 +47,24 @@ function escapeJsonString(str) {
  * @param {Function} options.logger - Optional logger function
  * @returns {Promise<Object>} - { verdict: 'PASS'|'FAIL', details: string, reason?: string }
  */
+// Accept both logger shapes — the test-door wiring + conversation
+// runtime pass an object `{info, warn, error}`, while early callers
+// passed a `(level, event, fields)` function. Normalize to a single
+// function so the rest of the auditor doesn't care which.
+function normalizeLogger(raw) {
+  if (typeof raw === 'function') return raw;
+  if (raw && typeof raw === 'object') {
+    return (level, event, fields) => {
+      const fn = raw[level] || raw.info;
+      if (typeof fn === 'function') fn.call(raw, event, fields);
+    };
+  }
+  return null;
+}
+
 async function auditResponse(userMessage, responseDraft, options = {}) {
-  const { memoryRows = [], logger } = options;
+  const { memoryRows = [], logger: rawLogger } = options;
+  const logger = normalizeLogger(rawLogger);
 
   // Fail-open if auditing is disabled or not configured
   if (AUDIT_DISABLED) {

@@ -305,6 +305,9 @@ function createTestDoorServer(options) {
       memoryCount: bundle.memoryCount,
       responseChars: bundle.response.length,
       errorClass: null,
+      auditVerdict: bundle.auditVerdict,
+      memoriesStored: bundle.memoriesStored,
+      factsExtracted: bundle.factsExtracted,
     });
 
     log('info', 'web.chat.responded', {
@@ -315,6 +318,9 @@ function createTestDoorServer(options) {
       reason: bundle.reason,
       memory_count: bundle.memoryCount,
       response_chars: bundle.response.length,
+      audit_verdict: bundle.auditVerdict,
+      memories_stored: bundle.memoriesStored,
+      facts_extracted: bundle.factsExtracted,
     });
 
     return jsonResponse(res, 200, {
@@ -326,6 +332,14 @@ function createTestDoorServer(options) {
       reason: bundle.reason,
       policyRef: bundle.policyRef,
       executed: bundle.executed,
+      // Brain-runtime audit + memory-writer fields. The wiring builds
+      // these; the UI's gov panel reads them. Omitting them here
+      // silently hides the audit verdict from the operator panel.
+      auditVerdict: bundle.auditVerdict,
+      auditDetails: bundle.auditDetails,
+      auditReason: bundle.auditReason,
+      memoriesStored: bundle.memoriesStored,
+      factsExtracted: bundle.factsExtracted,
     });
   }
 

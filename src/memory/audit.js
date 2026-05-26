@@ -15,9 +15,22 @@
  * below.
  */
 
+// Locked vocabulary. Each value is the audit row's event_type. Widening
+// requires a paired ALLOWED_UPDATE_COLUMNS edit in repository.js so the
+// memory-boundary guard stays honest.
+//
+//   memory.created — INSERT into memory_store (createMemory path).
+//   memory.list    — SELECT into the per-request visibility list.
+//   memory.updated — UPDATE to a controlled subset of memory_store
+//                    columns: memory_status (WORKING_ACTIVE → VERIFIED
+//                    promotion) and active (deactivation/supersession
+//                    after a user correction). Content, provenance,
+//                    pilot/owner identity remain immutable per the
+//                    db/migrations/015 trigger.
 const EVENT_TYPES = Object.freeze({
   MEMORY_CREATED: 'memory.created',
   MEMORY_LIST: 'memory.list',
+  MEMORY_UPDATED: 'memory.updated',
 });
 
 const ALLOWED_EVENT_TYPES = new Set(Object.values(EVENT_TYPES));

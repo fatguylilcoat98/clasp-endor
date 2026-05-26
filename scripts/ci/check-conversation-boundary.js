@@ -78,8 +78,27 @@ const FORBIDDEN_MODULE_EXACT = new Set([
 ]);
 const FORBIDDEN_MODULE_PREFIXES = ['@openai/'];
 
-// The single approved model SDK.
+// The primary approved model SDK. Anthropic remains the response
+// model for every conversation runtime path.
 const ALLOWED_MODEL_SDK = '@anthropic-ai/sdk';
+
+// Per-file allowlist for secondary model SDKs. The brain pipeline
+// (src/conversation/brain.js) intentionally uses OpenAI for two
+// narrow stages:
+//   Stage 1 — Priority Filter — text-embedding-3-small for salience
+//   Stage 4 — Sentiment Analyzer — emotion classification
+// Groq lives in auditor.js and is loaded inside src/memory/extractor.js
+// (Layer 2 fact extraction); neither path is in this scan root. The
+// auditor.js import is intentionally NOT allowed here — auditor.js
+// uses `groq-sdk`, not `openai`/`anthropic`, so it never hits this
+// forbidden list.
+//
+// Adding another module/file pair requires a paired update to
+// docs/governance/conversation-runtime-boundary.md plus a comment
+// explaining the stage and why fail-open is correct.
+const SECONDARY_MODEL_ALLOWLIST = new Map([
+  ['src/conversation/brain.js', new Set(['openai'])],
+]);
 
 // Anthropic publishes some helpers as @anthropic-ai/<thing>. Anything
 // under that org other than the SDK itself requires explicit owner
@@ -151,6 +170,11 @@ function isForbiddenModule(specifier) {
   return false;
 }
 
+function isSecondaryModelAllowedFor(rel, specifier) {
+  const allowed = SECONDARY_MODEL_ALLOWLIST.get(rel);
+  return !!(allowed && allowed.has(specifier));
+}
+
 function isForbiddenPathSpecifier(specifier) {
   for (const prefix of FORBIDDEN_PATH_PREFIXES) {
     if (specifier === prefix || specifier.startsWith(prefix + '/')) return true;
@@ -185,8 +209,12 @@ for (const rel of files) {
     const specifier = m[1];
 
     if (isForbiddenModule(specifier)) {
-      errors.push(`${rel}: forbidden module import "${specifier}"`);
-      continue;
+      if (isSecondaryModelAllowedFor(rel, specifier)) {
+        // File-level allowlist — silently pass. Documented above.
+      } else {
+        errors.push(`${rel}: forbidden module import "${specifier}"`);
+        continue;
+      }
     }
     if (isForbiddenPathSpecifier(specifier)) {
       errors.push(

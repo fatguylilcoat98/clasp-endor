@@ -252,11 +252,21 @@ test('B7. Attempt: classifier-blessed Decision but with the actor handed a runti
 // C. EVENT_TYPES lock — adversarial snapshot (OQ-22.9)
 // ===================================================================
 
-test('C1. EVENT_TYPES snapshot: the GM-18-locked memory-audit vocabulary is unchanged by GM-22.', () => {
-  // GM-22 introduced no new audit event types. If a future PR
-  // expands the audit vocabulary, this snapshot diff will catch
-  // it and force a paired review of the GM-18 lock.
-  const SNAPSHOT = ['memory.created', 'memory.list'];
+test('C1. EVENT_TYPES snapshot: locked vocabulary (memory.{created,list,updated}).', () => {
+  // GM-18 originally locked the vocabulary at {memory.created,
+  // memory.list}. GM-22 — GM-30 deliberately added nothing. The
+  // clasp-endor correction / supersession system (post-GM-30, commit
+  // 8637637 onward) adds `memory.updated` for state transitions on
+  // memory_store (status promotion + deactivation). Both transition
+  // sites are scoped UPDATEs on memory_store with column-allowlist
+  // enforcement at the boundary guard (scripts/ci/check-memory-
+  // boundary.js) AND row-level immutability at the DB trigger
+  // (db/migrations/015). The other "GM-XX added NO new audit event
+  // types" snapshots below remain semantically valid — none of GM-22
+  // through GM-30 added types; the post-GM-30 correction system did.
+  // Any further widening still requires a paired boundary-guard +
+  // docs update and a snapshot bump here.
+  const SNAPSHOT = ['memory.created', 'memory.list', 'memory.updated'];
   const current = Object.values(memoryAudit.EVENT_TYPES).sort();
   assert.deepEqual(current, SNAPSHOT.sort(),
     'memory EVENT_TYPES snapshot drifted — adding event types requires paired updates to docs/governance/');
@@ -534,7 +544,7 @@ test('E6. Attempt: sentinel content in payloadSummary AND evidenceSummary. Asser
 
 test('E10. EVENT_TYPES snapshot still passes — GM-23 added NO new audit event types.', () => {
   // Re-asserts GM-22 C1 to make the lock visible at the GM-23 boundary.
-  const SNAPSHOT = ['memory.created', 'memory.list'];
+  const SNAPSHOT = ['memory.created', 'memory.list', 'memory.updated'];
   const current = Object.values(memoryAudit.EVENT_TYPES).sort();
   assert.deepEqual(current, SNAPSHOT.sort(),
     'GM-23 must not widen memory EVENT_TYPES — the queue table IS the artifact');
@@ -729,7 +739,7 @@ test('F10. Sentinel content in unknown params field never appears in captured lo
 
 test('F11. EVENT_TYPES snapshot still locked — GM-24 added NO new audit event types.', () => {
   // The governance_review_decisions table IS the artifact (per OQ-24.9).
-  const SNAPSHOT = ['memory.created', 'memory.list'];
+  const SNAPSHOT = ['memory.created', 'memory.list', 'memory.updated'];
   const current = Object.values(memoryAudit.EVENT_TYPES).sort();
   assert.deepEqual(current, SNAPSHOT.sort(),
     'GM-24 must not widen memory EVENT_TYPES — the review-decisions table IS the artifact');
@@ -928,7 +938,7 @@ test('G10. Sentinel content in unknown params field never appears in captured lo
 });
 
 test('G11. EVENT_TYPES snapshot still locked — GM-25 added NO new audit event types.', () => {
-  const SNAPSHOT = ['memory.created', 'memory.list'];
+  const SNAPSHOT = ['memory.created', 'memory.list', 'memory.updated'];
   const current = Object.values(memoryAudit.EVENT_TYPES).sort();
   assert.deepEqual(current, SNAPSHOT.sort(),
     'GM-25 must not widen memory EVENT_TYPES — the authorizations table IS the artifact');
@@ -1167,7 +1177,7 @@ test('H14. Sentinel content in unknown params field never appears in captured lo
 });
 
 test('H15. EVENT_TYPES snapshot still locked — GM-26 added NO new audit event types.', () => {
-  const SNAPSHOT = ['memory.created', 'memory.list'];
+  const SNAPSHOT = ['memory.created', 'memory.list', 'memory.updated'];
   const current = Object.values(memoryAudit.EVENT_TYPES).sort();
   assert.deepEqual(current, SNAPSHOT.sort(),
     'GM-26 must not widen memory EVENT_TYPES — the claims table IS the artifact');
@@ -1470,7 +1480,7 @@ test('I14. Sentinel content in unknown params field never appears in captured lo
 });
 
 test('I15. EVENT_TYPES snapshot still locked — GM-27 added NO new audit event types.', () => {
-  const SNAPSHOT = ['memory.created', 'memory.list'];
+  const SNAPSHOT = ['memory.created', 'memory.list', 'memory.updated'];
   const current = Object.values(memoryAudit.EVENT_TYPES).sort();
   assert.deepEqual(current, SNAPSHOT.sort(),
     'GM-27 must not widen memory EVENT_TYPES — the attempts table IS the artifact');
@@ -1698,7 +1708,7 @@ test('J14. Sentinel content in unknown params field never appears in captured lo
 });
 
 test('J15. EVENT_TYPES snapshot still locked — GM-28 added NO new audit event types.', () => {
-  const SNAPSHOT = ['memory.created', 'memory.list'];
+  const SNAPSHOT = ['memory.created', 'memory.list', 'memory.updated'];
   const current = Object.values(memoryAudit.EVENT_TYPES).sort();
   assert.deepEqual(current, SNAPSHOT.sort(),
     'GM-28 must not widen memory EVENT_TYPES — the outcomes table IS the artifact');
@@ -1932,7 +1942,7 @@ test('K14. Sentinel content in unknown params field never appears in captured lo
 
 test('K15. EVENT_TYPES snapshot still locked — GM-29 added NO new audit event types.', () => {
   const memoryAudit = require('../../src/memory/audit');
-  const SNAPSHOT = ['memory.created', 'memory.list'];
+  const SNAPSHOT = ['memory.created', 'memory.list', 'memory.updated'];
   const current = Object.values(memoryAudit.EVENT_TYPES).sort();
   assert.deepEqual(current, SNAPSHOT.sort(),
     'GM-29 must not widen memory EVENT_TYPES — the verifications table IS the artifact');
@@ -2129,7 +2139,7 @@ test('L14. Sentinel content in scenario setup payload never appears in the rende
 
 test('L15. EVENT_TYPES snapshot still locked — GM-30 added NO new audit event types.', () => {
   const memoryAudit = require('../../src/memory/audit');
-  const SNAPSHOT = ['memory.created', 'memory.list'];
+  const SNAPSHOT = ['memory.created', 'memory.list', 'memory.updated'];
   const current = Object.values(memoryAudit.EVENT_TYPES).sort();
   assert.deepEqual(current, SNAPSHOT.sort(),
     'GM-30 must not widen memory EVENT_TYPES — GM-30 is a freeze-and-test GM, no substrate expansion');
@@ -2180,8 +2190,8 @@ test('L22. Substrate-freeze canary — exact counts of governance-staging tables
   // (4) EVENT_TYPES still exactly 2.
   const memoryAudit = require('../../src/memory/audit');
   const eventTypes = Object.values(memoryAudit.EVENT_TYPES);
-  assert.equal(eventTypes.length, 2,
-    `L22: EVENT_TYPES must remain at exactly 2; found ${eventTypes.length}: ${eventTypes.join(', ')}`);
+  assert.equal(eventTypes.length, 3,
+    `L22: EVENT_TYPES must remain at exactly 3 (memory.created, memory.list, memory.updated); found ${eventTypes.length}: ${eventTypes.join(', ')}`);
 });
 
 test('L24. File-scoped forbidden-vocabulary scan: src/gauntlet/ must not contain the 7-word OQ-30.10(a) list.', () => {

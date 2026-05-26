@@ -79,38 +79,34 @@ function createCompanionReader(options) {
   async function readVisibleMemories(input) {
     validateInputs(input);
     const { pilotInstanceId, userId, userRole, limit } = input;
-
-    try {
-      const rows = await withMemoryContext(
-        memoryPool,
-        { pilotInstanceId, userId, userRole },
-        (ctx) => ctx.listVisibleMemories(limit ? { limit } : undefined)
-      );
-      if (logger) {
-        // Log metadata only — never content. The fields below are all
-        // safe scalars (ids, counts, role tokens).
-        logger.info('companion.memory.read', {
-          pilot_instance_id: pilotInstanceId,
-          actor_user_id: userId,
-          actor_role: userRole,
-          count: rows.length,
-        });
-      }
-      return rows;
-    } catch (error) {
-      // Fail-open: memory errors should not break the companion response
-      if (logger) {
-        logger.warn('companion.memory.read_failed', {
-          pilot_instance_id: pilotInstanceId,
-          actor_user_id: userId,
-          actor_role: userRole,
-          error_class: error.name || 'unknown',
-          message: error.message?.substring(0, 100)
-        });
-      }
-      // Return empty array so conversation can proceed without memories
-      return [];
+    const rows = await withMemoryContext(
+      memoryPool,
+      { pilotInstanceId, userId, userRole },
+      (ctx) => ctx.listVisibleMemories(limit ? { limit } : undefined)
+    );
+    if (logger) {
+      // Log metadata only — never content. The fields below are all
+      // safe scalars (ids, counts, role tokens).
+      logger.info('companion.memory.read', {
+        pilot_instance_id: pilotInstanceId,
+        actor_user_id: userId,
+        actor_role: userRole,
+        count: rows.length,
+      });
     }
+    return rows;
+    // Intentionally no try/catch here. The reader must surface
+    // MemoryRepositoryError to the caller — fail-open at THIS layer
+    // would mask audit-INSERT FK violations and other configuration
+    // bugs that the operator must see. Fail-open lives higher up:
+    //   - src/web/wiring.js wraps storeWorkingMemories errors so
+    //     memory-WRITE failures never break the chat response.
+    //   - src/conversation/brain-runtime.js falls back to the
+    //     standard runtime on brain-pipeline errors.
+    //   - src/web/server.js returns 502 if the wiring throws so the
+    //     process stays up.
+    // Each is at the layer that knows what "safe to degrade" means
+    // for its scope. The reader's scope is "read or fail visibly".
   }
 
   // The returned reader exposes ONLY readVisibleMemories. It does

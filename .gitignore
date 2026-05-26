@@ -68,3 +68,13 @@ tests/gauntlet/manual/*
 # ----------------------------------------------------------------------------
 config/test-door.answers.json
 config/test-door.answers.local.json
+
+# ----------------------------------------------------------------------------
+# Ad-hoc debug / one-off test scripts at repo root — keep out of the deploy
+# bundle. These tend to accumulate connection strings and live API keys.
+# ----------------------------------------------------------------------------
+debug-*.js
+test-db.js
+test-*.js
+*-debug.js
+test_*.js
