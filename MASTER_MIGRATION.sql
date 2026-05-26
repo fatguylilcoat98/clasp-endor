@@ -174,7 +174,8 @@ BEGIN
   RETURN NEW;
 END $$;
 
-DROP TRIGGER IF EXISTS m; CREATE TRIGGER memory_store_immutable_columns
+DROP TRIGGER IF EXISTS memory_store_immutable_columns ON memory_store;
+CREATE TRIGGER memory_store_immutable_columns
   BEFORE UPDATE ON memory_store
   FOR EACH ROW EXECUTE FUNCTION trg_memory_store_immutable_columns();
 
@@ -212,7 +213,7 @@ BEGIN
   RAISE EXCEPTION 'governance_audit_log is append-only; % is not permitted', TG_OP;
 END $$;
 
-DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_audit_log_append_only
+DROP TRIGGER IF EXISTS governance_audit_log_append_only ON governance_audit_log; CREATE TRIGGER governance_audit_log_append_only
   BEFORE UPDATE OR DELETE ON governance_audit_log
   FOR EACH ROW EXECUTE FUNCTION trg_governance_audit_log_append_only();
 
@@ -392,31 +393,31 @@ BEGIN
 END $$;
 
 -- Apply to all governance tables
-DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_review_queue_append_only
+DROP TRIGGER IF EXISTS governance_review_queue_append_only ON governance_review_queue; CREATE TRIGGER governance_review_queue_append_only
   BEFORE UPDATE OR DELETE ON governance_review_queue
   FOR EACH ROW EXECUTE FUNCTION trg_governance_append_only();
 
-DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_review_decisions_append_only
+DROP TRIGGER IF EXISTS governance_review_decisions_append_only ON governance_review_decisions; CREATE TRIGGER governance_review_decisions_append_only
   BEFORE UPDATE OR DELETE ON governance_review_decisions
   FOR EACH ROW EXECUTE FUNCTION trg_governance_append_only();
 
-DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_execution_authorizations_append_only
+DROP TRIGGER IF EXISTS governance_execution_authorizations_append_only ON governance_execution_authorizations; CREATE TRIGGER governance_execution_authorizations_append_only
   BEFORE UPDATE OR DELETE ON governance_execution_authorizations
   FOR EACH ROW EXECUTE FUNCTION trg_governance_append_only();
 
-DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_execution_claims_append_only
+DROP TRIGGER IF EXISTS governance_execution_claims_append_only ON governance_execution_claims; CREATE TRIGGER governance_execution_claims_append_only
   BEFORE UPDATE OR DELETE ON governance_execution_claims
   FOR EACH ROW EXECUTE FUNCTION trg_governance_append_only();
 
-DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_execution_attempts_append_only
+DROP TRIGGER IF EXISTS governance_execution_attempts_append_only ON governance_execution_attempts; CREATE TRIGGER governance_execution_attempts_append_only
   BEFORE UPDATE OR DELETE ON governance_execution_attempts
   FOR EACH ROW EXECUTE FUNCTION trg_governance_append_only();
 
-DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_execution_outcomes_append_only
+DROP TRIGGER IF EXISTS governance_execution_outcomes_append_only ON governance_execution_outcomes; CREATE TRIGGER governance_execution_outcomes_append_only
   BEFORE UPDATE OR DELETE ON governance_execution_outcomes
   FOR EACH ROW EXECUTE FUNCTION trg_governance_append_only();
 
-DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_execution_verifications_append_only
+DROP TRIGGER IF EXISTS governance_execution_verifications_append_only ON governance_execution_verifications; CREATE TRIGGER governance_execution_verifications_append_only
   BEFORE UPDATE OR DELETE ON governance_execution_verifications
   FOR EACH ROW EXECUTE FUNCTION trg_governance_append_only();
 
@@ -567,3 +568,4 @@ DROP POLICY IF EXISTS e; CREATE POLICY execution_admin_select ON governance_exec
 -- =====================================================================
 
 SELECT 'CLASP-ENDOR MASTER MIGRATION COMPLETE - All tables 001-015 created successfully' as status;
+
