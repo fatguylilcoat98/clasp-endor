@@ -8,7 +8,36 @@
  *
  * Part of the tiered memory architecture:
  * - This layer: WORKING_ACTIVE memories (immediate, unverified)
- * - Future layer: Governance review and VERIFIED memories
+ * - Promoted layer: VERIFIED (confidence >= 0.9 after promotion)
+ * - Future layer: Governance review of staged candidates
+ *
+ * Memory-write discipline (hardening pass, Task 5):
+ *   - Default confidence threshold is 0.5. Below this, an extracted
+ *     "fact" is dropped before it ever reaches the DB. Raise via
+ *     options.minConfidence for stricter writes.
+ *   - Promotion to VERIFIED requires confidence >= 0.9 OR an explicit
+ *     personal-info pattern (name, favorite, lives in, works at).
+ *     Inferred relationships and emotional assumptions should never
+ *     reach 0.9 from the extractor.
+ *   - CORRECTION / RETRACTION facts deactivate conflicting memories
+ *     with the USER_CORRECTED / USER_RETRACTED audit reason. The
+ *     deactivation requires UPDATE grants (added in
+ *     db/migrations/016) and the memory_store_owner_update RLS
+ *     policy (same migration); the column allowlist
+ *     {active, memory_status, updated_at} is enforced both by the
+ *     memory-boundary CI guard and by the immutability trigger from
+ *     db/migrations/015.
+ *
+ * Things this writer must NOT do (per hardening Task 5):
+ *   - Store inferred relationships as confirmed facts.
+ *   - Persist emotional assumptions ("user seemed sad"). The Layer 2
+ *     prompt forbids this; if it slips through, the writer's
+ *     minConfidence filter is the next line of defense.
+ *   - Fabricate timeline. The extractor has no date-extraction
+ *     patterns; the writer does not synthesize dates.
+ *   - Overwrite identity. The schema's immutability trigger plus the
+ *     audit log mean overwrites must go through deactivateMemory +
+ *     re-INSERT, leaving a visible trail.
  */
 
 const { withMemoryContext } = require('./transaction');
