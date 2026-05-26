@@ -3,26 +3,29 @@
  * Test-door web boot entry.
  *
  * Composes the test-door HTTP server: parse env, build the
- * Anthropic-wired chat chain via src/web/wiring, build the recent
- * ring buffer, build the session codec, mount the server.
+ * Anthropic-wired chat chain via src/web/wiring, build the Supabase
+ * Auth client + identity resolver, build the recent ring buffer,
+ * build the session codec, mount the server.
  *
  * Hard rules:
  *   - This entry is for the disposable clasp-endor test instance only.
  *     It is gated by LYLO_WEB_MODE=true.
- *   - It reads NO secrets into its own scope beyond what the test door
- *     needs: ANTHROPIC_API_KEY, LYLO_APP_DATABASE_URL, the four UUID
- *     identifiers, WEB_SESSION_SECRET, PORT.
- *   - It does NOT mount /healthz, /readyz, /status from the
- *     non-web runtime — those still live in src/runtime/boot.js for
- *     the original boot path. The web server exposes its own /healthz
- *     for liveness during local development.
- *   - Database URLs are asserted to point at localhost / 127.0.0.1.
- *     A non-local host is a hard-stop — the test door must never
- *     connect to a remote DB (including the mold's).
+ *   - Each verified user gets a distinct public.users row (via
+ *     Supabase Auth + src/web/identity.js). No hardcoded shared UUIDs.
+ *   - Database URLs are asserted to point at localhost / 127.0.0.1
+ *     unless the Render escape-hatch triad is set
+ *     (GNG_TEST_INSTANCE_ALLOW_RENDER_DB=true + LYLO_WEB_MODE=true +
+ *     LYLO_SHELL_MODE=true). Same posture for LYLO_APP_DATABASE_URL
+ *     (memory pool) and LYLO_SETUP_DATABASE_URL (identity / users
+ *     provisioning).
  *
- * This file is scanned by check-runtime-boundary.js. It must not:
+ * Boundary scan: this file is scanned by check-runtime-boundary.js.
+ * It must not:
  *   - import @anthropic-ai/sdk (wiring.js does that)
- *   - import pg directly (wiring uses src/memory's pool)
+ *   - import @supabase/supabase-js (supabase-auth.js does that — and
+ *     even there it doesn't, the REST wrapper is hand-rolled)
+ *   - import pg directly (identity.js + wiring.js use src/db/client
+ *     and src/memory)
  *   - reference forbidden SQL keywords or non-allowlisted tables
  */
 
@@ -33,6 +36,8 @@ const { createTestDoorWiring } = require('../web/wiring');
 const { createTestDoorServer } = require('../web/server');
 const { createSessionCodec } = require('../web/session');
 const { createRecentBuffer } = require('../web/recent');
+const { createSupabaseAuthClient } = require('../web/supabase-auth');
+const { createIdentityResolver, bootstrapAdminEmailsFromEnv } = require('../web/identity');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DEFAULT_PORT = 3000;
@@ -53,26 +58,30 @@ function isLocalDatabaseUrl(url) {
   if (typeof url !== 'string' || url.length === 0) return false;
   try {
     const u = new URL(url);
-    const host = u.hostname;
+    const host = u.hostname.replace(/^\[|\]$/g, '');
     return host === 'localhost' || host === '127.0.0.1' || host === '::1';
   } catch {
     return false;
   }
 }
 
-function readIdentities(env) {
-  const errors = [];
-  const ids = {
-    pilotInstanceId: env.LYLO_PILOT_INSTANCE_ID,
-    seniorUserId: env.LYLO_TEST_SENIOR_USER_ID,
-    adminUserId: env.LYLO_TEST_ADMIN_USER_ID,
-  };
-  for (const [key, value] of Object.entries(ids)) {
-    if (typeof value !== 'string' || !UUID_RE.test(value)) {
-      errors.push(`${key} must be a UUID`);
-    }
+function isRenderEscapeEngaged(env) {
+  return (
+    String(env.GNG_TEST_INSTANCE_ALLOW_RENDER_DB || '').toLowerCase() === 'true'
+    && String(env.LYLO_WEB_MODE || '').toLowerCase() === 'true'
+    && String(env.LYLO_SHELL_MODE || '').toLowerCase() === 'true'
+  );
+}
+
+function isAcceptableDatabaseUrl(url, env) {
+  if (isLocalDatabaseUrl(url)) return true;
+  if (typeof url !== 'string' || url.length === 0) return false;
+  try {
+    new URL(url);
+  } catch {
+    return false;
   }
-  return { ids, errors };
+  return isRenderEscapeEngaged(env);
 }
 
 function listen(server, port) {
@@ -96,23 +105,37 @@ async function bootWeb(rawEnv) {
 
   const errors = [];
 
+  // ----- Core required env -----
   if (typeof env.ANTHROPIC_API_KEY !== 'string' || env.ANTHROPIC_API_KEY.trim() === '') {
     errors.push('ANTHROPIC_API_KEY is required');
   }
   if (typeof env.WEB_SESSION_SECRET !== 'string' || env.WEB_SESSION_SECRET.length < 16) {
     errors.push('WEB_SESSION_SECRET must be a string of length >= 16');
   }
-  if (!isLocalDatabaseUrl(env.LYLO_APP_DATABASE_URL)) {
-    const allowRender = String(env.GNG_TEST_INSTANCE_ALLOW_RENDER_DB || '').toLowerCase() === 'true';
-    const webMode = String(env.LYLO_WEB_MODE || '').toLowerCase() === 'true';
-    const shellMode = String(env.LYLO_SHELL_MODE || '').toLowerCase() === 'true';
-    if (!(allowRender && webMode && shellMode)) {
-      errors.push('LYLO_APP_DATABASE_URL must point at localhost / 127.0.0.1 (or set GNG_TEST_INSTANCE_ALLOW_RENDER_DB=true with LYLO_WEB_MODE=true and LYLO_SHELL_MODE=true to allow a remote test-door Postgres)');
-    }
+
+  // ----- Database URLs -----
+  if (!isAcceptableDatabaseUrl(env.LYLO_APP_DATABASE_URL, env)) {
+    errors.push('LYLO_APP_DATABASE_URL must point at localhost / 127.0.0.1 (or set GNG_TEST_INSTANCE_ALLOW_RENDER_DB=true with LYLO_WEB_MODE=true and LYLO_SHELL_MODE=true to allow a remote test-door Postgres)');
+  }
+  if (!isAcceptableDatabaseUrl(env.LYLO_SETUP_DATABASE_URL, env)) {
+    errors.push('LYLO_SETUP_DATABASE_URL must point at localhost / 127.0.0.1 (or set the Render escape-hatch triad). Required for auth signup / login to provision public.users rows via lylo_setup_login.');
   }
 
-  const { ids, errors: idErrors } = readIdentities(env);
-  errors.push(...idErrors);
+  // ----- Pilot identity -----
+  if (typeof env.LYLO_PILOT_INSTANCE_ID !== 'string' || !UUID_RE.test(env.LYLO_PILOT_INSTANCE_ID)) {
+    errors.push('LYLO_PILOT_INSTANCE_ID must be a UUID');
+  }
+
+  // ----- Supabase Auth -----
+  if (typeof env.SUPABASE_URL !== 'string' || !/^https:\/\//.test(env.SUPABASE_URL)) {
+    errors.push('SUPABASE_URL must be an https:// URL');
+  }
+  if (typeof env.SUPABASE_ANON_KEY !== 'string' || env.SUPABASE_ANON_KEY.length < 20) {
+    errors.push('SUPABASE_ANON_KEY is required');
+  }
+  if (typeof env.SUPABASE_JWT_SECRET !== 'string' || env.SUPABASE_JWT_SECRET.length < 16) {
+    errors.push('SUPABASE_JWT_SECRET is required (length >= 16)');
+  }
 
   if (errors.length > 0) {
     for (const message of errors) logger.error('boot.web.env_error', { message });
@@ -124,14 +147,29 @@ async function bootWeb(rawEnv) {
   const recent = createRecentBuffer();
   const wiring = createTestDoorWiring({ env, log: logger.emit });
 
+  const supabaseAuth = createSupabaseAuthClient({
+    supabaseUrl: env.SUPABASE_URL,
+    anonKey: env.SUPABASE_ANON_KEY,
+  });
+  const identity = createIdentityResolver({
+    setupDatabaseUrl: env.LYLO_SETUP_DATABASE_URL,
+    pilotInstanceId: env.LYLO_PILOT_INSTANCE_ID,
+    bootstrapAdminEmails: bootstrapAdminEmailsFromEnv(env.LYLO_BOOTSTRAP_ADMIN_EMAILS || ''),
+    log: logger.emit,
+  });
+
   const server = createTestDoorServer({
     repoRoot,
-    identities: ids,
+    pilotInstanceId: env.LYLO_PILOT_INSTANCE_ID,
     sessionCodec,
     wiring,
     recent,
+    supabaseAuth,
+    identity,
+    supabaseJwtSecret: env.SUPABASE_JWT_SECRET,
+    expectedJwtIssuer: `${env.SUPABASE_URL.replace(/\/$/, '')}/auth/v1`,
     log: logger.emit,
-    secureCookie: false,
+    secureCookie: String(env.NODE_ENV || '').toLowerCase() === 'production',
   });
 
   const port = parsePort(env.PORT);
@@ -147,6 +185,7 @@ async function bootWeb(rawEnv) {
       if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
       await closed;
       await wiring.close();
+      await identity.close();
       logger.info('boot.web.shutdown.complete');
     })();
     return shuttingDown;
