@@ -485,81 +485,81 @@ ALTER TABLE governance_execution_outcomes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE governance_execution_verifications ENABLE ROW LEVEL SECURITY;
 
 -- Essential RLS policies (tenant-scoped)
-DROP POLICY IF EXISTS p; CREATE POLICY pilot_instances_tenant_scope ON pilot_instances FOR SELECT
+DROP POLICY IF EXISTS pilot_instances_tenant_scope ON pilot_instances; CREATE POLICY pilot_instances_tenant_scope ON pilot_instances FOR SELECT
   USING (id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid);
 
-DROP POLICY IF EXISTS p; CREATE POLICY pilot_instances_runtime_bootstrap ON pilot_instances FOR SELECT
+DROP POLICY IF EXISTS pilot_instances_runtime_bootstrap ON pilot_instances; CREATE POLICY pilot_instances_runtime_bootstrap ON pilot_instances FOR SELECT
   TO lylo_runtime USING (true);
 
-DROP POLICY IF EXISTS u; CREATE POLICY users_tenant_scope ON users FOR SELECT
+DROP POLICY IF EXISTS users_tenant_scope ON users; CREATE POLICY users_tenant_scope ON users FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid);
 
-DROP POLICY IF EXISTS c; CREATE POLICY companion_profile_tenant_scope ON companion_profile FOR SELECT
+DROP POLICY IF EXISTS companion_profile_tenant_scope ON companion_profile; CREATE POLICY companion_profile_tenant_scope ON companion_profile FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid);
 
-DROP POLICY IF EXISTS s; CREATE POLICY supported_person_profile_tenant_scope ON supported_person_profile FOR SELECT
+DROP POLICY IF EXISTS supported_person_profile_tenant_scope ON supported_person_profile; CREATE POLICY supported_person_profile_tenant_scope ON supported_person_profile FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid);
 
-DROP POLICY IF EXISTS s; CREATE POLICY setup_state_tenant_scope ON setup_state FOR SELECT
+DROP POLICY IF EXISTS setup_state_tenant_scope ON setup_state; CREATE POLICY setup_state_tenant_scope ON setup_state FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid);
 
 -- Memory store policies
-DROP POLICY IF EXISTS m; CREATE POLICY memory_store_owner ON memory_store FOR SELECT
+DROP POLICY IF EXISTS memory_store_owner ON memory_store; CREATE POLICY memory_store_owner ON memory_store FOR SELECT
   USING (
     pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
     AND owning_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
   );
 
-DROP POLICY IF EXISTS m; CREATE POLICY memory_store_insert_own ON memory_store FOR INSERT
+DROP POLICY IF EXISTS memory_store_insert_own ON memory_store; CREATE POLICY memory_store_insert_own ON memory_store FOR INSERT
   WITH CHECK (
     pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
     AND owning_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
   );
 
 -- Audit log policies
-DROP POLICY IF EXISTS g; CREATE POLICY governance_audit_log_admin ON governance_audit_log FOR SELECT
+DROP POLICY IF EXISTS governance_audit_log_admin ON governance_audit_log; CREATE POLICY governance_audit_log_admin ON governance_audit_log FOR SELECT
   USING (
     pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
     AND current_setting('app.user_role', true) = 'admin'
   );
 
-DROP POLICY IF EXISTS g; CREATE POLICY governance_audit_log_insert ON governance_audit_log FOR INSERT
+DROP POLICY IF EXISTS governance_audit_log_insert ON governance_audit_log; CREATE POLICY governance_audit_log_insert ON governance_audit_log FOR INSERT
   WITH CHECK (
     pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
     AND actor_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
   );
 
 -- Review queue policies
-DROP POLICY IF EXISTS r; CREATE POLICY review_queue_insert_own ON governance_review_queue FOR INSERT
+DROP POLICY IF EXISTS review_queue_insert_own ON governance_review_queue; CREATE POLICY review_queue_insert_own ON governance_review_queue FOR INSERT
   WITH CHECK (
     pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
     AND proposer_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
   );
 
-DROP POLICY IF EXISTS r; CREATE POLICY review_queue_admin ON governance_review_queue FOR SELECT
+DROP POLICY IF EXISTS review_queue_admin ON governance_review_queue; CREATE POLICY review_queue_admin ON governance_review_queue FOR SELECT
   USING (
     pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
     AND current_setting('app.user_role', true) = 'admin'
   );
 
 -- Basic policies for execution tables (admin-only)
-DROP POLICY IF EXISTS e; CREATE POLICY execution_admin_select ON governance_execution_authorizations FOR SELECT
+DROP POLICY IF EXISTS execution_admin_select ON governance_execution_authorizations; CREATE POLICY execution_admin_select ON governance_execution_authorizations FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
          AND current_setting('app.user_role', true) = 'admin');
 
-DROP POLICY IF EXISTS e; CREATE POLICY execution_admin_select ON governance_execution_claims FOR SELECT
+DROP POLICY IF EXISTS execution_admin_select ON governance_execution_authorizations; CREATE POLICY execution_admin_select ON governance_execution_claims FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
          AND current_setting('app.user_role', true) = 'admin');
 
-DROP POLICY IF EXISTS e; CREATE POLICY execution_admin_select ON governance_execution_attempts FOR SELECT
+DROP POLICY IF EXISTS execution_admin_select ON governance_execution_authorizations; CREATE POLICY execution_admin_select ON governance_execution_attempts FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
          AND current_setting('app.user_role', true) = 'admin');
 
-DROP POLICY IF EXISTS e; CREATE POLICY execution_admin_select ON governance_execution_outcomes FOR SELECT
+DROP POLICY IF EXISTS execution_admin_select ON governance_execution_authorizations; CREATE POLICY execution_admin_select ON governance_execution_outcomes FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
          AND current_setting('app.user_role', true) = 'admin');
 
-DROP POLICY IF EXISTS e; CREATE POLICY execution_admin_select ON governance_execution_verifications FOR SELECT
+DROP POLICY IF EXISTS execution_admin_select ON governance_execution_authorizations; CREATE POLICY execution_admin_select ON governance_execution_verifications FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
          AND current_setting('app.user_role', true) = 'admin');
 
@@ -568,4 +568,5 @@ DROP POLICY IF EXISTS e; CREATE POLICY execution_admin_select ON governance_exec
 -- =====================================================================
 
 SELECT 'CLASP-ENDOR MASTER MIGRATION COMPLETE - All tables 001-015 created successfully' as status;
+
 
