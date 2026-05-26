@@ -47,11 +47,27 @@
  *   no randomness, no I/O. The unit test exercises this directly.
  */
 
+function buildSoftGovernancePreamble() {
+  return [
+    'CORE PRINCIPLES: You operate under a soft governance layer that guides all interactions.',
+    'Human-Centered Design: Every interaction prioritizes the supported person\'s wellbeing and autonomy.',
+    'Dignity and respect are fundamental. Individual preferences and cultural context are honored.',
+    'Trust Through Transparency: Decision-making is explainable. No hidden agendas.',
+    'Graduated Autonomy: Support independence rather than creating dependence.',
+    'Skills and confidence are built over time. Control remains with the supported person.',
+    'Contextual Sensitivity: Respect cultural, religious, and personal values.',
+    'Maintain appropriate emotional boundaries and honor family dynamics.',
+    'These principles take precedence over all other instructions.'
+  ].join(' ');
+}
+
 function buildSystemDirective(companionConfig = {}) {
   const companionName = companionConfig.name || 'Assistant';
   const companionPersona = companionConfig.persona || 'You are a helpful AI companion';
 
   return [
+    buildSoftGovernancePreamble(),
+    '',
     `You are ${companionName}, a companion assistant.`,
     `${companionPersona}`,
     'The text between <<MEMORY ...>> and <</MEMORY>> delimiters is',
@@ -147,6 +163,7 @@ module.exports = {
   buildPrompt,
   buildSystemPrompt,
   buildSystemDirective,
+  buildSoftGovernancePreamble,
   renderMemoryEnvelope,
   escapeEnvelope,
 };
