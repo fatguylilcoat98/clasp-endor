@@ -78,26 +78,32 @@ function extractWithPatterns(userMessage) {
       confidence: 0.75
     },
 
-    // Relationships (high confidence)
+    // Relationships (high confidence). Negative lookaheads on the
+    // name capture prevent "my brother is not Daniel" from extracting
+    // "User's brother is named not" / "User's brother is not Daniel"
+    // as affirmative facts — those false-positive extractions
+    // contaminated retrieval against any natural-language correction
+    // (see live test).
     {
-      pattern: /my\s+(wife|husband|partner|spouse|girlfriend|boyfriend)\s+(?:is\s+)?(?:named\s+)?([a-zA-Z]+)/i,
+      pattern: /my\s+(wife|husband|partner|spouse|girlfriend|boyfriend)\s+is\s+(?:named\s+)?(?!not\b)([a-zA-Z]+)/i,
       extract: (match) => `User's ${match[1]} is named ${match[2]}`,
       confidence: 0.85
     },
     {
-      pattern: /my\s+(mother|father|mom|dad|son|daughter|brother|sister)\s+(?:is\s+)?(?:named\s+)?([a-zA-Z]+)/i,
+      pattern: /my\s+(mother|father|mom|dad|son|daughter|brother|sister)\s+is\s+(?:named\s+)?(?!not\b)([a-zA-Z]+)/i,
       extract: (match) => `User's ${match[1]} is named ${match[2]}`,
       confidence: 0.85
     },
     {
-      pattern: /([a-zA-Z]+)\s+is\s+my\s+(wife|husband|partner|mother|father|mom|dad|son|daughter|brother|sister)/i,
+      pattern: /^(?!not\b)([a-zA-Z]+)\s+is\s+my\s+(wife|husband|partner|mother|father|mom|dad|son|daughter|brother|sister)/i,
       extract: (match) => `${match[1]} is user's ${match[2]}`,
       confidence: 0.85
     },
 
-    // Possessions and properties
+    // Possessions and properties. The negative lookahead excludes
+    // "is not" — see the relationship patterns above for why.
     {
-      pattern: /my\s+([^,\s]+)\s+is\s+(?:a\s+|an\s+)?(.+?)(?:[,.!?]|$)/i,
+      pattern: /my\s+([^,\s]+)\s+is(?!\s+not)\s+(?:a\s+|an\s+)?(.+?)(?:[,.!?]|$)/i,
       extract: (match) => `User's ${match[1]} is ${match[2].trim()}`,
       confidence: 0.7
     },
@@ -140,6 +146,32 @@ function extractWithPatterns(userMessage) {
         }
       },
       confidence: 0.95
+    },
+    // Natural-language correction: "<Name> is not (actually) my <relationship>"
+    // Optionally prefixed with "Correction:" / "Actually,". This is the
+    // phrasing the operator's live test uncovered as a retrieval
+    // integrity bug (extractor previously emitted nothing, no
+    // CORRECTION row got stored, the seeded fact stayed canonical).
+    {
+      pattern: /^(?:correction\s*[:\-]?\s*)?(?:actually,?\s+)?([a-zA-Z][a-zA-Z\s'\-]*?)\s+is\s+not\s+(?:actually\s+)?my\s+(brother|sister|wife|husband|partner|mother|father|mom|dad|son|daughter|spouse|girlfriend|boyfriend)(?:[,.!?]|$)/i,
+      extract: (match) => `CORRECTION: User does not have ${match[2].toLowerCase()} named ${match[1].trim()}`,
+      confidence: 0.95
+    },
+    // Reverse phrasing: "my <relationship> is not <Name>" — catches
+    // "my brother is not Daniel" / "my sister is not Maria".
+    {
+      pattern: /^(?:correction\s*[:\-]?\s*)?(?:actually,?\s+)?my\s+(brother|sister|wife|husband|partner|mother|father|mom|dad|son|daughter|spouse|girlfriend|boyfriend)\s+is\s+not\s+(?:named\s+|called\s+)?([a-zA-Z][a-zA-Z\s'\-]*?)(?:[,.!?]|$)/i,
+      extract: (match) => `CORRECTION: User does not have ${match[1].toLowerCase()} named ${match[2].trim()}`,
+      confidence: 0.95
+    },
+    // Generic "Correction: <anything>" prefix that doesn't fit the
+    // structured patterns above. Lower confidence because the content
+    // is unparsed, but the prefix marks it as a correction so the
+    // writer's correction loop will run a substring-based search.
+    {
+      pattern: /^correction\s*[:\-]\s*(.+?)(?:[.!?]|$)/i,
+      extract: (match) => `CORRECTION: ${match[1].trim()}`,
+      confidence: 0.85
     },
     {
       pattern: /(?:forget|ignore)\s+(?:what\s+i\s+said\s+about|that\s+i\s+mentioned)\s+(.+?)(?:[,.!?]|$)/i,

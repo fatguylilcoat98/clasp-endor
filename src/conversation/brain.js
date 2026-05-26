@@ -167,10 +167,37 @@ async function processMemoryEngine(userMessage, memoryRows, priorityOutput, cont
       }
     }
 
-    // Sort by relevance and attention weight
-    memoriesWithScores.sort((a, b) =>
-      (b.relevanceScore * priorityOutput.attentionWeight) - (a.relevanceScore * priorityOutput.attentionWeight)
-    );
+    // Authority-weighted sort. Embedding similarity alone is wrong
+    // for the supersession case — a poisoned seed and a user-issued
+    // correction are both about the same topic, so they have similar
+    // semantic scores, and the seed (often longer + more declarative)
+    // can outscore the correction. Without an authority bias, the
+    // model is shown a memory bundle in which the seeded "fact" leads
+    // and answers as if it's true.
+    //
+    // Authority comes from src/memory/repository.js#computeAuthority,
+    // already attached to each row as authority_level. The boost
+    // table is intentionally large enough that a USER_CORRECTED entry
+    // always wins over an EXTRACTED/INFERRED entry on the same topic,
+    // regardless of embedding score.
+    function authorityBoost(memory) {
+      switch (memory.authority_level) {
+        case 'USER_CORRECTED':  return 1.0;
+        case 'USER_CONFIRMED':  return 0.7;
+        case 'SYSTEM_SEEDED':   return 0.5;
+        case 'VERIFIED':        return 0.4;
+        case 'EXTRACTED':       return 0.2;
+        case 'INFERRED':        return 0.0;
+        case 'LOW_CONFIDENCE':  return -0.1;
+        default:                return 0.0;
+      }
+    }
+
+    memoriesWithScores.sort((a, b) => {
+      const aScore = (a.relevanceScore * priorityOutput.attentionWeight) + authorityBoost(a);
+      const bScore = (b.relevanceScore * priorityOutput.attentionWeight) + authorityBoost(b);
+      return bScore - aScore;
+    });
 
     const topMemories = memoriesWithScores.slice(0, 8); // Top 8 most relevant
     const memoryContext = topMemories.map(m => m.content).join('\n');

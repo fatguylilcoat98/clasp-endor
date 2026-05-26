@@ -113,9 +113,20 @@ test('Daniel poisoned-memory: correction deactivates the existing brother row', 
       userRole: 'senior',
     });
 
-    // 1. The writer searched for the conflicting memory.
-    assert.deepEqual(state.searchCalls, ["User's brother is named Daniel"]);
-    // 2. The writer deactivated it with the USER_CORRECTED reason.
+    // 1. The writer searched for the conflicting memory in all three
+    //    stored forms: relationship-first, name-first, name-only
+    //    fallback. (Multi-form search added to catch the live-test
+    //    regression where the seeded form differed from the form the
+    //    writer was searching for.)
+    assert.ok(state.searchCalls.includes("User's brother is named Daniel"),
+      'searches relationship-first form');
+    assert.ok(state.searchCalls.includes("Daniel is user's brother"),
+      'searches name-first form');
+    assert.ok(state.searchCalls.includes('Daniel'),
+      'searches by name as substring fallback');
+    // 2. The writer deactivated it with the USER_CORRECTED reason —
+    //    exactly once, even though multiple searches may have
+    //    returned the same row (dedup by id).
     assert.equal(state.deactivateCalls.length, 1);
     assert.equal(state.deactivateCalls[0].id, 'mem-daniel');
     assert.equal(state.deactivateCalls[0].reason, 'USER_CORRECTED');

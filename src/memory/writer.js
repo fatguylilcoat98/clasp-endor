@@ -151,17 +151,45 @@ function createMemoryWriter(options = {}) {
                   const relationship = match[1].trim();
                   const name = match[2]?.trim();
 
-                  // Find and deactivate conflicting memories
-                  let searchPattern;
+                  // Search multiple stored forms — different extractor
+                  // patterns produce the same fact in different
+                  // orderings. Live test (Daniel-not-my-brother)
+                  // showed the old single-form search missed seeded
+                  // facts stored in the alternate form. Deduplicate
+                  // by id since name-first and relationship-first
+                  // searches overlap when both are seeded.
+                  const conflictById = new Map();
+                  const collect = (rows) => {
+                    for (const r of rows) conflictById.set(r.id, r);
+                  };
                   if (name) {
-                    searchPattern = `User's ${relationship} is named ${name}`;
+                    // Relationship-first: "User's brother is named Daniel"
+                    collect(await ctx.findActiveMemoriesContaining(
+                      `User's ${relationship} is named ${name}`
+                    ));
+                    // Name-first: "Daniel is user's brother"
+                    collect(await ctx.findActiveMemoriesContaining(
+                      `${name} is user's ${relationship}`
+                    ));
+                    // Name-only fallback — filter in JS to those that
+                    // ALSO contain the relationship word. Catches
+                    // free-form seeds like "Daniel is Chris's brother"
+                    // or operator-inserted variants we don't know
+                    // the exact shape of.
+                    const byName = await ctx.findActiveMemoriesContaining(name);
+                    for (const r of byName) {
+                      const lc = (r.content || '').toLowerCase();
+                      if (lc.includes(relationship.toLowerCase())) {
+                        conflictById.set(r.id, r);
+                      }
+                    }
                   } else {
-                    searchPattern = `User's ${relationship}`;
+                    collect(await ctx.findActiveMemoriesContaining(
+                      `User's ${relationship}`
+                    ));
                   }
 
-                  // Deactivate conflicting memories
-                  const conflictingMemories = await ctx.findActiveMemoriesContaining(searchPattern);
-                  for (const memory of conflictingMemories) {
+                  for (const memory of conflictById.values()) {
                     await ctx.deactivateMemory(memory.id, 'USER_CORRECTED');
                     deactivated++;
                   }

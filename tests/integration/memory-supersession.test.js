@@ -235,3 +235,108 @@ test('Daniel scenario: seed → correct → retrieve → re-pool → still corre
     'new session: Daniel must still not appear (supersession is persistent)'
   );
 });
+
+// ---------------------------------------------------------------
+// Live-test regression: the user said "Correction: Daniel is not my
+// brother" via chat and the extractor's existing patterns didn't
+// match. No CORRECTION was generated, the seeded fact stayed canonical,
+// and the model kept asserting "Daniel is your brother" on the next
+// turn. This test runs through the REAL extractor (not a mock) to
+// prove the natural-language phrasings are caught end-to-end.
+// ---------------------------------------------------------------
+test('natural-language correction phrasing supersedes the seeded fact', async () => {
+  // Reload the real writer/extractor — the previous test polluted the
+  // require cache with mocks.
+  delete require.cache[require.resolve('../../src/memory/writer')];
+  delete require.cache[require.resolve('../../src/memory/extractor')];
+  const { createMemoryWriter: realWriter } = require('../../src/memory/writer');
+
+  // Reuse appPool from the suite (it was reopened in test 1 step E).
+  // Seed the affirmative fact through the same code path the chat
+  // surface would use — extract "My brother is Daniel" via the real
+  // extractor, then write via the real writer. This proves the
+  // pipeline both ways.
+  const writer = realWriter({ memoryPool: appPool, logger: null });
+  const seedWrite = await writer.storeWorkingMemories({
+    userMessage: 'My brother is Daniel',
+    pilotInstanceId: PILOT_A,
+    userId: SENIOR_A,
+    userRole: 'senior',
+  });
+  assert.ok(seedWrite.stored >= 1, 'seed write stored at least one fact');
+
+  // Pre-correction: the seeded "User's brother is named Daniel"
+  // should be visible.
+  const reader = createCompanionReader({ memoryPool: appPool });
+  const pre = await reader.readVisibleMemories({
+    pilotInstanceId: PILOT_A, userId: SENIOR_A, userRole: 'senior', limit: 100,
+  });
+  assert.ok(
+    pre.some((r) => r.content === "User's brother is named Daniel"),
+    'pre-correction: brother-named-Daniel fact is visible'
+  );
+
+  // Apply the natural-language correction — exactly the phrasing
+  // the live test failed on.
+  const correctionWrite = await writer.storeWorkingMemories({
+    userMessage: 'Correction: Daniel is not my brother',
+    pilotInstanceId: PILOT_A,
+    userId: SENIOR_A,
+    userRole: 'senior',
+  });
+  assert.ok(correctionWrite.stored >= 1,
+    'natural-language correction must produce at least one stored CORRECTION fact');
+
+  // Verify the seeded affirmative fact is now SUPERSEDED.
+  const superuser = new Client({ connectionString: DATABASE_URL });
+  await superuser.connect();
+  try {
+    const seedAfter = await superuser.query(
+      "SELECT active, memory_status FROM memory_store WHERE content = $1",
+      ["User's brother is named Daniel"]
+    );
+    assert.ok(seedAfter.rowCount >= 1, 'seed row still present (history preserved)');
+    const allSeeds = seedAfter.rows;
+    // At least one of the matching rows must now be deactivated /
+    // SUPERSEDED. (If the writer wrote multiple seeds across the
+    // suite, only the latest needed deactivation for THIS correction
+    // to work — but the natural-language correction targets the
+    // brother-named-Daniel substring so all matching rows should be
+    // hit by findActiveMemoriesContaining.)
+    assert.ok(
+      allSeeds.every((r) => r.active === false && r.memory_status === 'SUPERSEDED'),
+      'every brother-named-Daniel row must be SUPERSEDED after the correction'
+    );
+  } finally {
+    await superuser.end();
+  }
+
+  // Retrieval: the seeded fact MUST NOT appear. The CORRECTION row
+  // MUST appear and rank first (USER_CORRECTED authority).
+  const post = await reader.readVisibleMemories({
+    pilotInstanceId: PILOT_A, userId: SENIOR_A, userRole: 'senior', limit: 100,
+  });
+  assert.equal(
+    post.some((r) => r.content === "User's brother is named Daniel"),
+    false,
+    'post-correction: the seeded brother-named-Daniel fact must not surface in retrieval'
+  );
+  const correction = post.find(
+    (r) => r.content.startsWith('CORRECTION:') && r.content.includes('Daniel')
+  );
+  assert.ok(correction, 'a CORRECTION row about Daniel must appear in retrieval');
+  assert.equal(correction.authority_level, 'USER_CORRECTED');
+
+  // New-session persistence — Daniel must still not resurrect.
+  await closeMemoryPool(appPool);
+  appPool = createMemoryPool(LYLO_APP_DATABASE_URL, { max: 3 });
+  const freshReader = createCompanionReader({ memoryPool: appPool });
+  const newSession = await freshReader.readVisibleMemories({
+    pilotInstanceId: PILOT_A, userId: SENIOR_A, userRole: 'senior', limit: 100,
+  });
+  assert.equal(
+    newSession.some((r) => r.content === "User's brother is named Daniel"),
+    false,
+    'new session: the seeded fact remains SUPERSEDED across pools'
+  );
+});
