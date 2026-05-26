@@ -27,7 +27,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 
 const { createMemoryPool, closeMemoryPool, createMemoryWriter } = require('../memory');
 const { createCompanionReader } = require('../companion');
-const { createConversationRuntime } = require('../conversation/runtime');
+const { createBrainEnabledRuntime } = require('../conversation/brain-runtime');
 const { createResponseDeliveryActor } = require('../actors');
 const {
   classifyExecutionIntent,
@@ -106,7 +106,7 @@ function createTestDoorWiring(options) {
   const logAdapter = buildLogAdapter(log);
   const companionReader = createCompanionReader({ memoryPool, log: logAdapter });
   const memoryWriter = createMemoryWriter({ memoryPool, logger: logAdapter });
-  const conversationRuntime = createConversationRuntime({
+  const conversationRuntime = createBrainEnabledRuntime({
     companionReader,
     modelClient,
     log: logAdapter,
