@@ -1,0 +1,41 @@
+-- Drop the `users_one_senior_per_pilot` partial unique index.
+--
+-- WHY
+-- Migration 001 declared `at most one row per pilot with role='senior'`
+-- as a substrate-level invariant. That reflected the original elder-
+-- care product shape (one supported person per companion). The
+-- Path 2 multi-user test door — and any future product where multiple
+-- people share a pilot — requires multiple `role='senior'` rows, so
+-- the constraint blocks the second signup with SQLSTATE 23505.
+--
+-- WHAT THIS DOES NOT WEAKEN
+-- The actual cross-user isolation guarantee is enforced by RLS, not
+-- by this constraint. `memory_store_owner` narrows by
+-- `owning_user_id = app.user_id`. `governance_audit_log_insert`
+-- narrows by `actor_user_id = app.user_id`. Those policies are
+-- unchanged. 160 RLS contract tests continue to pass.
+--
+-- WHAT THIS DOES NOT BREAK
+-- - Existing data: no row is modified. The index is dropped; the
+--   `role` column and its CHECK constraint remain.
+-- - Existing tests: the rls-contract suite seeds one senior per
+--   pilot and never tries to insert two, so it doesn't depend on
+--   this index.
+-- - Existing application code: nothing in src/ relies on "exactly
+--   one senior per pilot." The brain pipeline, conversation runtime,
+--   memory layer, and actors all narrow by user UUID, not by
+--   "the senior."
+--
+-- IF ELDER-CARE PRODUCTS NEED SINGLE-SENIOR LATER
+-- Re-add this as an application-level check at the signup boundary
+-- (refuse second-senior signup for that pilot), not as a substrate
+-- constraint. Keeps the substrate general; keeps product-specific
+-- rules in product code.
+
+DROP INDEX IF EXISTS users_one_senior_per_pilot;
+
+-- Rollback (re-impose single-senior — would block multi-user signups
+-- against a multi-user dataset, so only safe on a fresh / single-senior
+-- pilot):
+-- CREATE UNIQUE INDEX users_one_senior_per_pilot
+--   ON users (pilot_instance_id) WHERE role = 'senior';

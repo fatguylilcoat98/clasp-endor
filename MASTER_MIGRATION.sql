@@ -631,9 +631,48 @@ CREATE POLICY memory_store_owner_update ON memory_store FOR UPDATE
   );
 
 -- =====================================================================
+-- 017: AUTH USER LINK — public.users.auth_user_id for Supabase Auth
+-- =====================================================================
+-- Closes the cross-user identity leak in the pre-auth test door
+-- (every "regular" login mapped to one hardcoded UUID). New web
+-- signups via Supabase Auth INSERT a public.users row with a
+-- distinct auth_user_id; subsequent logins look up the row by that
+-- id and the existing RLS contract narrows memory_store /
+-- governance_audit_log / etc. by the resolved distinct user.id.
+--
+-- Nullable column. Legacy rows (test_door_senior, test_door_admin)
+-- keep auth_user_id = NULL — they are no longer reachable through
+-- the auth web flow but the substrate accepts them. UNIQUE applies
+-- only to non-NULL values per Postgres default semantics.
+--
+-- Identity-layer only: no RLS change, no new table, no
+-- EVENT_TYPES, no new actor. No new grants required (lylo_setup
+-- already has INSERT/SELECT on users).
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS auth_user_id UUID UNIQUE;
+
+CREATE INDEX IF NOT EXISTS users_auth_user_id_idx
+  ON users (auth_user_id)
+  WHERE auth_user_id IS NOT NULL;
+
+-- =====================================================================
+-- 018: DROP users_one_senior_per_pilot — substrate is multi-user
+-- =====================================================================
+-- Migration 001 declared "at most one senior per pilot" as an index
+-- constraint. That reflected the original single-supported-person
+-- product shape. The Path 2 auth flow provisions every signup as
+-- role='senior', so the second signup tripped 23505. Cross-user
+-- isolation is enforced by RLS (memory_store_owner narrows by
+-- owning_user_id = app.user_id), not by this index, so dropping it
+-- removes no privacy guarantee.
+
+DROP INDEX IF EXISTS users_one_senior_per_pilot;
+
+-- =====================================================================
 -- SUCCESS CONFIRMATION
 -- =====================================================================
 
-SELECT 'CLASP-ENDOR MASTER MIGRATION COMPLETE - All tables 001-016 applied successfully' as status;
+SELECT 'CLASP-ENDOR MASTER MIGRATION COMPLETE - All tables 001-018 applied successfully' as status;
 
 
