@@ -215,16 +215,34 @@ test('companion-read: governance_audit_log grows by exactly one memory.list row 
   );
 });
 
-test('companion-read: pg errors emerge as MemoryRepositoryError (no pg detail leak through the consumer)', async () => {
+test('companion-read: pg errors fail open as empty result, with sanitized warn log (no pg detail leak)', async () => {
   // Force an FK violation by passing a syntactically-valid UUID for
   // userId that does not correspond to any users row in the pilot.
   // The audit INSERT's composite FK (pilot_instance_id, actor_user_id)
-  // → users (pilot_instance_id, id) raises SQLSTATE 23503.
+  // → users (pilot_instance_id, id) raises SQLSTATE 23503 at the DB
+  // layer; src/memory wraps it as MemoryRepositoryError.
+  //
+  // Post-fef1259 contract: src/companion/reader.js catches the wrapped
+  // error and fails open (returns []), logging a warn line. This test
+  // verifies BOTH halves of the new contract:
+  //   1. caller observes empty result, not a throw (resilience);
+  //   2. the warn log carries only a coarse error_class, never pg's
+  //      detail/where/routine and never the orphan userId (privacy).
   const orphan = '00000000-0000-0000-0000-deadbeefdead';
-  const { MemoryRepositoryError } = require('../../src/companion');
+  const captured = [];
+  const captureLog = {
+    info() {},
+    warn(event, fields) { captured.push({ event, fields }); },
+    error() {},
+  };
+  const localReader = require('../../src/companion').createCompanionReader({
+    memoryPool: appPool,
+    log: captureLog,
+  });
   let caught;
+  let result;
   try {
-    await reader.readVisibleMemories({
+    result = await localReader.readVisibleMemories({
       pilotInstanceId: PILOT_A,
       userId: orphan,
       userRole: 'senior',
@@ -233,14 +251,24 @@ test('companion-read: pg errors emerge as MemoryRepositoryError (no pg detail le
   } catch (err) {
     caught = err;
   }
-  assert.ok(caught, 'must have caught the wrapped error');
-  assert.ok(caught instanceof MemoryRepositoryError);
-  assert.equal(caught.name, 'MemoryRepositoryError');
-  assert.equal(caught.message, 'memory operation failed');
-  assert.ok(/^[0-9A-Z]{5}$/.test(caught.error_class), `error_class must be SQLSTATE: ${caught.error_class}`);
-  // pg internals must not have leaked.
-  assert.equal(caught.detail, undefined);
-  assert.equal(caught.where, undefined);
-  assert.equal(caught.routine, undefined);
-  assert.equal(caught.message.includes(orphan), false);
+  // 1. resilience: fail-open returns empty array, doesn't throw.
+  assert.equal(caught, undefined, 'reader must not throw — fail-open contract');
+  assert.deepEqual(result, [], 'reader must return [] on memory error');
+
+  // 2. privacy: the warn log carries only sanitized metadata.
+  const warns = captured.filter((c) => c.event === 'companion.memory.read_failed');
+  assert.equal(warns.length, 1, 'reader must emit exactly one warn on failure');
+  const fields = warns[0].fields;
+  assert.equal(fields.error_class, 'MemoryRepositoryError');
+  assert.equal(typeof fields.message, 'string');
+  // pg internals must not leak into the log line.
+  assert.equal(fields.detail, undefined);
+  assert.equal(fields.where, undefined);
+  assert.equal(fields.routine, undefined);
+  // The orphan UUID is an identifier the caller provided; it appears
+  // in actor_user_id (operational metadata, by design), but must not
+  // appear inside the truncated message field (which echoes the
+  // sanitized error text).
+  assert.equal(fields.message.includes(orphan), false,
+    'orphan UUID must not appear inside the sanitized error message');
 });
