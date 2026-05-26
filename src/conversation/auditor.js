@@ -11,15 +11,21 @@
  * blocking legitimate responses.
  */
 
-const Groq = require('groq-sdk');
-
 // Environment-based configuration
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const AUDIT_DISABLED = process.env.AUDIT_DISABLED === 'true';
 
 let groqClient = null;
-if (GROQ_API_KEY && !AUDIT_DISABLED) {
-  groqClient = new Groq({ apiKey: GROQ_API_KEY });
+let Groq = null;
+
+// Safe import - fail gracefully if groq-sdk is not available
+try {
+  if (GROQ_API_KEY && !AUDIT_DISABLED) {
+    Groq = require('groq-sdk');
+    groqClient = new Groq({ apiKey: GROQ_API_KEY });
+  }
+} catch (importError) {
+  // groq-sdk not available - will fail-open
 }
 
 function escapeJsonString(str) {
@@ -49,11 +55,12 @@ async function auditResponse(userMessage, responseDraft, options = {}) {
     return { verdict: 'PASS', details: 'audit-disabled' };
   }
 
-  if (!groqClient) {
+  if (!groqClient || !Groq) {
     if (logger) {
-      logger('warn', 'auditor.no_api_key', { message: 'GROQ_API_KEY not set, skipping audit' });
+      const reason = !Groq ? 'groq-sdk not available' : 'GROQ_API_KEY not set';
+      logger('warn', 'auditor.unavailable', { message: `${reason}, skipping audit` });
     }
-    return { verdict: 'PASS', details: 'no-groq-key' };
+    return { verdict: 'PASS', details: !Groq ? 'groq-sdk-unavailable' : 'no-groq-key' };
   }
 
   // Skip audit if no memories to check against
