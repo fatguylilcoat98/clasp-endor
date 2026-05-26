@@ -126,16 +126,32 @@ async function processMemoryEngine(userMessage, memoryRows, priorityOutput, cont
     const availableMemories = memoryRows || [];
 
     if (!openaiClient || !priorityOutput.embedding) {
-      // Graceful degradation - return memories without re-ranking
+      // Graceful degradation - return memories without re-ranking.
+      // The companion reader already ordered these by authority bucket
+      // (see src/memory/repository.js#listVisibleMemories ORDER BY),
+      // so taking the first 10 still respects authority.
+      const selected = availableMemories.slice(0, 10);
       if (logger) {
         logger.info('brain.memory_engine.degraded', {
           reason: 'no_embedding_capability',
           memory_count: availableMemories.length
         });
+        if (String(process.env.LYLO_DEBUG_RETRIEVAL || '').toLowerCase() === 'true') {
+          logger.info('brain.memory_engine.debug_degraded_selection', {
+            source: 'companion_reader_authority_order',
+            selected_count: selected.length,
+            ranking: selected.map((m, idx) => ({
+              rank: idx + 1,
+              id: m.id,
+              authority_level: m.authority_level || 'unknown',
+              content_excerpt: typeof m.content === 'string' ? m.content.slice(0, 80) : null,
+            })),
+          });
+        }
       }
       return {
-        relevantMemories: availableMemories.slice(0, 10), // Top 10 memories
-        memoryContext: availableMemories.slice(0, 10).map(m => m.content).join('\n'),
+        relevantMemories: selected,
+        memoryContext: selected.map(m => m.content).join('\n'),
         degraded: true,
         reason: 'no_reranking'
       };
@@ -193,14 +209,43 @@ async function processMemoryEngine(userMessage, memoryRows, priorityOutput, cont
       }
     }
 
-    memoriesWithScores.sort((a, b) => {
-      const aScore = (a.relevanceScore * priorityOutput.attentionWeight) + authorityBoost(a);
-      const bScore = (b.relevanceScore * priorityOutput.attentionWeight) + authorityBoost(b);
-      return bScore - aScore;
-    });
+    // Compute the final score once per memory so the diagnostic log
+    // below shows the same number the sort used.
+    for (const m of memoriesWithScores) {
+      m._authorityBoost = authorityBoost(m);
+      m._finalScore = (m.relevanceScore * priorityOutput.attentionWeight) + m._authorityBoost;
+    }
+    memoriesWithScores.sort((a, b) => b._finalScore - a._finalScore);
 
     const topMemories = memoriesWithScores.slice(0, 8); // Top 8 most relevant
     const memoryContext = topMemories.map(m => m.content).join('\n');
+
+    // Diagnostic log gated by LYLO_DEBUG_RETRIEVAL=true. Emits the
+    // full ranked list with authority + scores so the operator can
+    // see exactly why a memory won/lost. SAFE TO LOG: content excerpt
+    // is truncated to 80 chars (the same envelope existing log lines
+    // use); ids, authority, and scores are non-sensitive. Privacy
+    // posture matches the rest of the brain pipeline — never logs
+    // full memory content of >80 chars, never logs the user message.
+    if (logger && String(process.env.LYLO_DEBUG_RETRIEVAL || '').toLowerCase() === 'true') {
+      logger.info('brain.memory_engine.debug_ranking', {
+        rank_count: memoriesWithScores.length,
+        selected_count: topMemories.length,
+        ranking: memoriesWithScores.map((m, idx) => ({
+          rank: idx + 1,
+          selected: idx < topMemories.length,
+          id: m.id,
+          authority_level: m.authority_level || 'unknown',
+          relevance: Math.round((m.relevanceScore || 0) * 1000) / 1000,
+          attention: Math.round((priorityOutput.attentionWeight || 0) * 1000) / 1000,
+          authority_boost: m._authorityBoost,
+          final_score: Math.round(m._finalScore * 1000) / 1000,
+          content_excerpt: typeof m.content === 'string'
+            ? m.content.slice(0, 80)
+            : null,
+        })),
+      });
+    }
 
     if (logger) {
       logger.info('brain.memory_engine.processed', {

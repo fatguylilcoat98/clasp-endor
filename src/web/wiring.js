@@ -193,6 +193,23 @@ function createTestDoorWiring(options) {
       factsExtracted: memoryWriteResult?.extracted || 0,
     };
     bundle.executed = bundle.outcome === 'executed';
+
+    // Diagnostic — gated by LYLO_DEBUG_RETRIEVAL=true. Surfaces
+    // brain pipeline metadata at the top wiring layer so the
+    // operator can see whether the brain ran, whether it fell back,
+    // and which regions degraded. Per-memory ranking is logged
+    // inside brain.js Stage 2 under the same env flag.
+    if (String(env.LYLO_DEBUG_RETRIEVAL || '').toLowerCase() === 'true') {
+      log('info', 'wiring.debug_chat_summary', {
+        pilot_instance_id: pilotInstanceId,
+        actor_role: userRole,
+        memory_count: bundle.memoryCount,
+        memories_stored_this_turn: bundle.memoriesStored,
+        facts_extracted_this_turn: bundle.factsExtracted,
+        audit_verdict: bundle.auditVerdict,
+        brain_meta: result.brainMeta || null,
+      });
+    }
     return bundle;
   }
 
