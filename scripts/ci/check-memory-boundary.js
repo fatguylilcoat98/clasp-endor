@@ -11,16 +11,25 @@
  * and that's it.
  *
  * Fails the build on:
- *   1. A forbidden SQL keyword in code: UPDATE, DELETE, DROP, ALTER,
- *      TRUNCATE, GRANT, REVOKE, CREATE. (INSERT is allowed but
- *      restricted to two tables — see rule 3.)
+ *   1. A forbidden SQL keyword in code: DELETE, DROP, ALTER, TRUNCATE,
+ *      GRANT, REVOKE, CREATE. (INSERT and UPDATE are allowed but
+ *      restricted — see rules 3 and 4.)
  *   2. A FROM/JOIN clause referencing a table outside the memory-
  *      module read allowlist.
  *   3. An INSERT clause referencing a table outside the memory-module
  *      write allowlist.
- *   4. An import of a model SDK (openai, anthropic, @anthropic-ai/sdk,
+ *   4. An UPDATE clause:
+ *        - in a file outside UPDATE_ALLOWED_FILES, OR
+ *        - targeting a table outside UPDATE_ALLOWED_TABLES, OR
+ *        - whose SET clause names a column outside
+ *          UPDATE_ALLOWED_COLUMNS.
+ *      The DB-level immutability trigger from db/migrations/015 is the
+ *      authoritative defense; this guard is a paired static check so a
+ *      stray UPDATE in a new memory file fails CI before it reaches
+ *      the trigger.
+ *   5. An import of a model SDK (openai, anthropic, @anthropic-ai/sdk,
  *      @openai/*, @anthropic-ai/*).
- *   5. An import of pg from anywhere other than src/memory/client.js.
+ *   6. An import of pg from anywhere other than src/memory/client.js.
  *
  * The guard scans only .js files under SCAN_ROOTS. Its own source is
  * not scanned (it necessarily contains the keywords and table names
@@ -56,16 +65,40 @@ const INSERT_ALLOWED_TABLES = new Set([
   'governance_audit_log',
 ]);
 
-// Forbidden write/DDL keywords. UPDATE/DELETE are explicitly banned
-// (GM-17 has no UPDATE grants and no DELETE on anything). INSERT is
-// allowed but tracked separately (rule 3).
-const FORBIDDEN_SQL = /\b(UPDATE|DELETE|DROP|ALTER|TRUNCATE|GRANT|REVOKE|CREATE)\b/g;
+// Forbidden write/DDL keywords. DELETE/DROP/etc. are flat banned.
+// INSERT is allowed but tracked separately (rule 3). UPDATE is allowed
+// only when narrowly scoped (rule 4).
+const FORBIDDEN_SQL = /\b(DELETE|DROP|ALTER|TRUNCATE|GRANT|REVOKE|CREATE)\b/g;
 
-// FROM/JOIN target detection (case-insensitive).
-const FROM_JOIN = /\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)/gi;
+// FROM/JOIN target detection. Case-sensitive uppercase — real SQL in
+// this codebase uses uppercase keywords; lowercase "from this …" in
+// prompt strings is English text, not a query.
+const FROM_JOIN = /\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)/g;
 
-// INSERT INTO target detection (case-insensitive).
-const INSERT_INTO = /\bINSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)/gi;
+// INSERT INTO target detection. Same uppercase-only rule.
+const INSERT_INTO = /\bINSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)/g;
+
+// UPDATE detection. We capture the table name AND the SET column list
+// so we can reject any column outside the allowlist. Same uppercase
+// posture as FROM_JOIN.
+const UPDATE_STMT = /\bUPDATE\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+SET\s+([^;]*?)(?:\bWHERE\b|\bRETURNING\b|$)/gs;
+const SET_COLUMN = /([a-zA-Z_][a-zA-Z0-9_]*)\s*=/g;
+
+// Files permitted to issue UPDATE statements at all.
+const UPDATE_ALLOWED_FILES = new Set(['src/memory/repository.js']);
+
+// Tables the memory module is permitted to UPDATE.
+const UPDATE_ALLOWED_TABLES = new Set(['memory_store']);
+
+// Columns the memory module is permitted to mutate on UPDATE. The
+// db/migrations/015 immutability trigger blocks the rest (id,
+// pilot_instance_id, owning_user_id, content, provenance, created_at)
+// at the DB layer; this list mirrors that contract.
+const UPDATE_ALLOWED_COLUMNS = new Set([
+  'memory_status',
+  'active',
+  'updated_at',
+]);
 
 // CommonJS require() form.
 const REQUIRE = /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
@@ -131,7 +164,36 @@ for (const rel of files) {
     }
   }
 
-  // 4 + 5. Forbidden imports and pg-scoping.
+  // 4. UPDATE statements — narrowly scoped. File + table + columns
+  //    must all be allowed. The db trigger from migration 015 is the
+  //    authoritative defense; this static check fails CI before a
+  //    stray UPDATE in a new file can reach the trigger at runtime.
+  for (const m of code.matchAll(UPDATE_STMT)) {
+    const table = m[1].toLowerCase();
+    const setClause = m[2] || '';
+    if (!UPDATE_ALLOWED_FILES.has(rel)) {
+      errors.push(
+        `${rel}: UPDATE is permitted only in ${Array.from(UPDATE_ALLOWED_FILES).join(', ')}`
+      );
+      continue;
+    }
+    if (!UPDATE_ALLOWED_TABLES.has(table)) {
+      errors.push(
+        `${rel}: UPDATE references non-allowlisted table "${m[1]}" (allowed: ${Array.from(UPDATE_ALLOWED_TABLES).join(', ')})`
+      );
+      continue;
+    }
+    for (const cm of setClause.matchAll(SET_COLUMN)) {
+      const col = cm[1].toLowerCase();
+      if (!UPDATE_ALLOWED_COLUMNS.has(col)) {
+        errors.push(
+          `${rel}: UPDATE memory_store SET "${cm[1]}" — column outside allowlist (allowed: ${Array.from(UPDATE_ALLOWED_COLUMNS).join(', ')})`
+        );
+      }
+    }
+  }
+
+  // 5 + 6. Forbidden imports and pg-scoping.
   for (const m of code.matchAll(REQUIRE)) {
     const specifier = m[1];
     if (isForbiddenModule(specifier)) {

@@ -211,12 +211,15 @@ async function deactivateMemory(client, sessionCtx, memoryId, reason) {
     throw new Error('deactivateMemory: memory not found or already deactivated');
   }
 
-  // Audit the deactivation
-  await insertAuditEvent(client, sessionCtx, EVENT_TYPES.MEMORY_UPDATED, {
-    memory_id: memoryId,
-    action: 'deactivated',
-    reason: reason,
-    status_change: 'active->inactive'
+  // Audit the deactivation. The function signature is
+  // insertAuditEvent(client, sessionCtx, fields) — eventType lives
+  // INSIDE the fields object, not as a positional argument.
+  await insertAuditEvent(client, sessionCtx, {
+    eventType: EVENT_TYPES.MEMORY_UPDATED,
+    outcome: 'allowed',
+    memoryId,
+    targetUserId: sessionCtx.userId,
+    reason: `deactivated (active->false, status->SUPERSEDED): ${reason}`,
   });
 
   return { id: memoryId, deactivatedAt: result.rows[0].updated_at };
