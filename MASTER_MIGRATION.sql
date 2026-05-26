@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS users (
   UNIQUE (pilot_instance_id, username)
 );
 
-CREATE UNIQUE INDEX users_one_senior_per_pilot
+CREATE UNIQUE INDEX IF NOT EXISTS users_one_senior_per_pilot
   ON users (pilot_instance_id) WHERE role = 'senior';
 
 -- =====================================================================
@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS memory_store (
 );
 
 -- Memory store immutability trigger
-CREATE FUNCTION trg_memory_store_immutable_columns() RETURNS TRIGGER
+CREATE OR REPLACE FUNCTION trg_memory_store_immutable_columns() RETURNS TRIGGER
 LANGUAGE plpgsql AS $$
 BEGIN
   IF OLD.id <> NEW.id
@@ -174,7 +174,7 @@ BEGIN
   RETURN NEW;
 END $$;
 
-CREATE TRIGGER memory_store_immutable_columns
+DROP TRIGGER IF EXISTS m; CREATE TRIGGER memory_store_immutable_columns
   BEFORE UPDATE ON memory_store
   FOR EACH ROW EXECUTE FUNCTION trg_memory_store_immutable_columns();
 
@@ -206,13 +206,13 @@ CREATE TABLE IF NOT EXISTS governance_audit_log (
 );
 
 -- Audit log append-only trigger
-CREATE FUNCTION trg_governance_audit_log_append_only() RETURNS TRIGGER
+CREATE OR REPLACE FUNCTION trg_governance_audit_log_append_only() RETURNS TRIGGER
 LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'governance_audit_log is append-only; % is not permitted', TG_OP;
 END $$;
 
-CREATE TRIGGER governance_audit_log_append_only
+DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_audit_log_append_only
   BEFORE UPDATE OR DELETE ON governance_audit_log
   FOR EACH ROW EXECUTE FUNCTION trg_governance_audit_log_append_only();
 
@@ -385,38 +385,38 @@ CREATE TABLE IF NOT EXISTS governance_execution_verifications (
 -- APPEND-ONLY TRIGGERS for governance tables
 -- =====================================================================
 
-CREATE FUNCTION trg_governance_append_only() RETURNS TRIGGER
+CREATE OR REPLACE FUNCTION trg_governance_append_only() RETURNS TRIGGER
 LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION '% is append-only; % is not permitted', TG_TABLE_NAME, TG_OP;
 END $$;
 
 -- Apply to all governance tables
-CREATE TRIGGER governance_review_queue_append_only
+DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_review_queue_append_only
   BEFORE UPDATE OR DELETE ON governance_review_queue
   FOR EACH ROW EXECUTE FUNCTION trg_governance_append_only();
 
-CREATE TRIGGER governance_review_decisions_append_only
+DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_review_decisions_append_only
   BEFORE UPDATE OR DELETE ON governance_review_decisions
   FOR EACH ROW EXECUTE FUNCTION trg_governance_append_only();
 
-CREATE TRIGGER governance_execution_authorizations_append_only
+DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_execution_authorizations_append_only
   BEFORE UPDATE OR DELETE ON governance_execution_authorizations
   FOR EACH ROW EXECUTE FUNCTION trg_governance_append_only();
 
-CREATE TRIGGER governance_execution_claims_append_only
+DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_execution_claims_append_only
   BEFORE UPDATE OR DELETE ON governance_execution_claims
   FOR EACH ROW EXECUTE FUNCTION trg_governance_append_only();
 
-CREATE TRIGGER governance_execution_attempts_append_only
+DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_execution_attempts_append_only
   BEFORE UPDATE OR DELETE ON governance_execution_attempts
   FOR EACH ROW EXECUTE FUNCTION trg_governance_append_only();
 
-CREATE TRIGGER governance_execution_outcomes_append_only
+DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_execution_outcomes_append_only
   BEFORE UPDATE OR DELETE ON governance_execution_outcomes
   FOR EACH ROW EXECUTE FUNCTION trg_governance_append_only();
 
-CREATE TRIGGER governance_execution_verifications_append_only
+DROP TRIGGER IF EXISTS g; CREATE TRIGGER governance_execution_verifications_append_only
   BEFORE UPDATE OR DELETE ON governance_execution_verifications
   FOR EACH ROW EXECUTE FUNCTION trg_governance_append_only();
 
@@ -484,81 +484,81 @@ ALTER TABLE governance_execution_outcomes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE governance_execution_verifications ENABLE ROW LEVEL SECURITY;
 
 -- Essential RLS policies (tenant-scoped)
-CREATE POLICY pilot_instances_tenant_scope ON pilot_instances FOR SELECT
+DROP POLICY IF EXISTS p; CREATE POLICY pilot_instances_tenant_scope ON pilot_instances FOR SELECT
   USING (id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid);
 
-CREATE POLICY pilot_instances_runtime_bootstrap ON pilot_instances FOR SELECT
+DROP POLICY IF EXISTS p; CREATE POLICY pilot_instances_runtime_bootstrap ON pilot_instances FOR SELECT
   TO lylo_runtime USING (true);
 
-CREATE POLICY users_tenant_scope ON users FOR SELECT
+DROP POLICY IF EXISTS u; CREATE POLICY users_tenant_scope ON users FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid);
 
-CREATE POLICY companion_profile_tenant_scope ON companion_profile FOR SELECT
+DROP POLICY IF EXISTS c; CREATE POLICY companion_profile_tenant_scope ON companion_profile FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid);
 
-CREATE POLICY supported_person_profile_tenant_scope ON supported_person_profile FOR SELECT
+DROP POLICY IF EXISTS s; CREATE POLICY supported_person_profile_tenant_scope ON supported_person_profile FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid);
 
-CREATE POLICY setup_state_tenant_scope ON setup_state FOR SELECT
+DROP POLICY IF EXISTS s; CREATE POLICY setup_state_tenant_scope ON setup_state FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid);
 
 -- Memory store policies
-CREATE POLICY memory_store_owner ON memory_store FOR SELECT
+DROP POLICY IF EXISTS m; CREATE POLICY memory_store_owner ON memory_store FOR SELECT
   USING (
     pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
     AND owning_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
   );
 
-CREATE POLICY memory_store_insert_own ON memory_store FOR INSERT
+DROP POLICY IF EXISTS m; CREATE POLICY memory_store_insert_own ON memory_store FOR INSERT
   WITH CHECK (
     pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
     AND owning_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
   );
 
 -- Audit log policies
-CREATE POLICY governance_audit_log_admin ON governance_audit_log FOR SELECT
+DROP POLICY IF EXISTS g; CREATE POLICY governance_audit_log_admin ON governance_audit_log FOR SELECT
   USING (
     pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
     AND current_setting('app.user_role', true) = 'admin'
   );
 
-CREATE POLICY governance_audit_log_insert ON governance_audit_log FOR INSERT
+DROP POLICY IF EXISTS g; CREATE POLICY governance_audit_log_insert ON governance_audit_log FOR INSERT
   WITH CHECK (
     pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
     AND actor_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
   );
 
 -- Review queue policies
-CREATE POLICY review_queue_insert_own ON governance_review_queue FOR INSERT
+DROP POLICY IF EXISTS r; CREATE POLICY review_queue_insert_own ON governance_review_queue FOR INSERT
   WITH CHECK (
     pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
     AND proposer_user_id = NULLIF(current_setting('app.user_id', true), '')::uuid
   );
 
-CREATE POLICY review_queue_admin ON governance_review_queue FOR SELECT
+DROP POLICY IF EXISTS r; CREATE POLICY review_queue_admin ON governance_review_queue FOR SELECT
   USING (
     pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
     AND current_setting('app.user_role', true) = 'admin'
   );
 
 -- Basic policies for execution tables (admin-only)
-CREATE POLICY execution_admin_select ON governance_execution_authorizations FOR SELECT
+DROP POLICY IF EXISTS e; CREATE POLICY execution_admin_select ON governance_execution_authorizations FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
          AND current_setting('app.user_role', true) = 'admin');
 
-CREATE POLICY execution_admin_select ON governance_execution_claims FOR SELECT
+DROP POLICY IF EXISTS e; CREATE POLICY execution_admin_select ON governance_execution_claims FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
          AND current_setting('app.user_role', true) = 'admin');
 
-CREATE POLICY execution_admin_select ON governance_execution_attempts FOR SELECT
+DROP POLICY IF EXISTS e; CREATE POLICY execution_admin_select ON governance_execution_attempts FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
          AND current_setting('app.user_role', true) = 'admin');
 
-CREATE POLICY execution_admin_select ON governance_execution_outcomes FOR SELECT
+DROP POLICY IF EXISTS e; CREATE POLICY execution_admin_select ON governance_execution_outcomes FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
          AND current_setting('app.user_role', true) = 'admin');
 
-CREATE POLICY execution_admin_select ON governance_execution_verifications FOR SELECT
+DROP POLICY IF EXISTS e; CREATE POLICY execution_admin_select ON governance_execution_verifications FOR SELECT
   USING (pilot_instance_id = NULLIF(current_setting('app.pilot_instance_id', true), '')::uuid
          AND current_setting('app.user_role', true) = 'admin');
 
