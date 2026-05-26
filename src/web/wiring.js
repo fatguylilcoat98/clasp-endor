@@ -164,13 +164,17 @@ function createTestDoorWiring(options) {
           options: { minConfidence: 0.5 }
         });
       } catch (error) {
-        // Log error but don't fail the chat response
+        // Fail-open: memory write errors should not fail the chat response
         if (log) {
           log('warn', 'wiring.memory_write_failed', {
+            pilot_instance_id: pilotInstanceId,
+            user_id: userId,
             error_class: describeErrClass(error),
             message: error.message?.substring(0, 100)
           });
         }
+        // Set safe defaults so response can continue
+        memoryWriteResult = { stored: 0, extracted: 0 };
       }
     }
 

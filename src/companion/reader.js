@@ -79,22 +79,38 @@ function createCompanionReader(options) {
   async function readVisibleMemories(input) {
     validateInputs(input);
     const { pilotInstanceId, userId, userRole, limit } = input;
-    const rows = await withMemoryContext(
-      memoryPool,
-      { pilotInstanceId, userId, userRole },
-      (ctx) => ctx.listVisibleMemories(limit ? { limit } : undefined)
-    );
-    if (logger) {
-      // Log metadata only — never content. The fields below are all
-      // safe scalars (ids, counts, role tokens).
-      logger.info('companion.memory.read', {
-        pilot_instance_id: pilotInstanceId,
-        actor_user_id: userId,
-        actor_role: userRole,
-        count: rows.length,
-      });
+
+    try {
+      const rows = await withMemoryContext(
+        memoryPool,
+        { pilotInstanceId, userId, userRole },
+        (ctx) => ctx.listVisibleMemories(limit ? { limit } : undefined)
+      );
+      if (logger) {
+        // Log metadata only — never content. The fields below are all
+        // safe scalars (ids, counts, role tokens).
+        logger.info('companion.memory.read', {
+          pilot_instance_id: pilotInstanceId,
+          actor_user_id: userId,
+          actor_role: userRole,
+          count: rows.length,
+        });
+      }
+      return rows;
+    } catch (error) {
+      // Fail-open: memory errors should not break the companion response
+      if (logger) {
+        logger.warn('companion.memory.read_failed', {
+          pilot_instance_id: pilotInstanceId,
+          actor_user_id: userId,
+          actor_role: userRole,
+          error_class: error.name || 'unknown',
+          message: error.message?.substring(0, 100)
+        });
+      }
+      // Return empty array so conversation can proceed without memories
+      return [];
     }
-    return rows;
   }
 
   // The returned reader exposes ONLY readVisibleMemories. It does
