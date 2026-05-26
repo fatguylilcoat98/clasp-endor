@@ -15,7 +15,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const Ajv = require('ajv');
+const Ajv2020 = require('ajv/dist/2020');
 
 const SCHEMA_PATH = path.join(__dirname, '..', '..', 'config', 'companion.schema.json');
 
@@ -40,7 +40,7 @@ let cachedValidator = null;
 // callers (CI, runtime) treat that as a hard failure.
 function getStructuralValidator() {
   if (cachedValidator) return cachedValidator;
-  const ajv = new Ajv({ allErrors: true, strict: false });
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
   cachedValidator = ajv.compile(loadSchema());
   return cachedValidator;
 }

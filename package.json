@@ -16,10 +16,10 @@
     "test:web": "node --test tests/web/*.test.js"
   },
   "devDependencies": {
-    "ajv": "8.17.1"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.98.0",
+    "ajv": "8.17.1",
     "pg": "8.21.0"
   }
 }
