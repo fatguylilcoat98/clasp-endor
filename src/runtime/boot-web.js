@@ -103,7 +103,12 @@ async function bootWeb(rawEnv) {
     errors.push('WEB_SESSION_SECRET must be a string of length >= 16');
   }
   if (!isLocalDatabaseUrl(env.LYLO_APP_DATABASE_URL)) {
-    errors.push('LYLO_APP_DATABASE_URL must point at localhost / 127.0.0.1');
+    const allowRender = String(env.GNG_TEST_INSTANCE_ALLOW_RENDER_DB || '').toLowerCase() === 'true';
+    const webMode = String(env.LYLO_WEB_MODE || '').toLowerCase() === 'true';
+    const shellMode = String(env.LYLO_SHELL_MODE || '').toLowerCase() === 'true';
+    if (!(allowRender && webMode && shellMode)) {
+      errors.push('LYLO_APP_DATABASE_URL must point at localhost / 127.0.0.1 (or set GNG_TEST_INSTANCE_ALLOW_RENDER_DB=true with LYLO_WEB_MODE=true and LYLO_SHELL_MODE=true to allow a remote test-door Postgres)');
+    }
   }
 
   const { ids, errors: idErrors } = readIdentities(env);
