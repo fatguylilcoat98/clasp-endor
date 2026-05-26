@@ -25,6 +25,23 @@
 
 const { Pool } = require('pg');
 const { describeErrorClass } = require('./errors');
+const fs = require('fs');
+const path = require('path');
+
+// SSL configuration for Supabase connections
+function getSSLConfig() {
+  const caCertPath = process.env.DB_CA_CERT_PATH || path.join(__dirname, '..', '..', 'certs', 'supabase-ca.crt');
+  try {
+    const ca = fs.readFileSync(caCertPath, 'utf8');
+    return {
+      rejectUnauthorized: true,
+      ca: ca,
+    };
+  } catch (err) {
+    // Fall back to no SSL config for local development
+    return undefined;
+  }
+}
 
 // Internal handle class. Not exported from src/memory/index.js;
 // constructed only by createMemoryPool. Frozen at construction so a
@@ -47,8 +64,10 @@ function createMemoryPool(databaseUrl, options) {
   }
   const opts = options || {};
   const log = opts.log || (() => {});
+  const sslConfig = getSSLConfig();
   const pool = new Pool({
     connectionString: databaseUrl,
+    ssl: sslConfig,
     max: opts.max || 5,
     connectionTimeoutMillis: opts.connectionTimeoutMillis || 5000,
     idleTimeoutMillis: opts.idleTimeoutMillis || 10000,

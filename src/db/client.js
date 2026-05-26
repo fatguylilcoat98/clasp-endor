@@ -11,6 +11,23 @@
  */
 
 const { Pool } = require('pg');
+const fs = require('fs');
+const path = require('path');
+
+// SSL configuration for Supabase connections
+function getSSLConfig() {
+  const caCertPath = process.env.DB_CA_CERT_PATH || path.join(__dirname, '..', '..', 'certs', 'supabase-ca.crt');
+  try {
+    const ca = fs.readFileSync(caCertPath, 'utf8');
+    return {
+      rejectUnauthorized: true,
+      ca: ca,
+    };
+  } catch (err) {
+    // Fall back to no SSL config for local development
+    return undefined;
+  }
+}
 
 // Bounded connection backoff: 4 attempts, waiting 1s, 2s, 4s, 8s after
 // a failed attempt. Exhausted attempts are fail-closed.
@@ -35,8 +52,10 @@ function describeDbError(err) {
 function createPool(databaseUrl, options) {
   const opts = options || {};
   const log = opts.log || (() => {});
+  const sslConfig = getSSLConfig();
   const pool = new Pool({
     connectionString: databaseUrl,
+    ssl: sslConfig,
     max: 3,
     connectionTimeoutMillis: 5000,
     idleTimeoutMillis: 10000,
