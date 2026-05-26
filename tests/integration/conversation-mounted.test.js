@@ -280,30 +280,19 @@ test('conversation-mounted: exactly ONE SDK call per respond()', async () => {
 
 // ---- MemoryRepositoryError propagation through the mounted runtime ----
 
-test('conversation-mounted: memory errors fail open through the companion reader; runtime proceeds with empty memories', async () => {
+test('conversation-mounted: MemoryRepositoryError propagates sanitized (no pg detail leak)', async () => {
   // Force an FK violation in the audit-log INSERT by supplying a
   // syntactically-valid UUID for userId that does not match any users
-  // row. The audit INSERT raises 23503 at the DB layer; src/memory
-  // wraps it into MemoryRepositoryError.
-  //
-  // Post-fef1259 contract: src/companion/reader.js catches the wrapped
-  // error and fails open (returns []), so the conversation runtime
-  // proceeds with zero memories rather than aborting the chat. The
-  // SDK IS called in this contract — the model gets the user's
-  // message with empty memory context. The original "SDK must NOT be
-  // called" assertion belonged to the pre-fef1259 throw-on-error
-  // contract and no longer applies.
-  //
-  // The privacy guarantee that pg detail / where / routine must never
-  // appear in caller-visible output is preserved at the reader's warn
-  // log layer (verified in tests/integration/companion-read.test.js).
+  // row. The audit INSERT raises 23503; the memory module wraps it
+  // into MemoryRepositoryError; the conversation runtime lets it
+  // propagate; the SDK is never called.
   const sdk = makeMockSdkClient('OK');
   const rt = makeRuntime(sdk);
   const orphan = '00000000-0000-0000-0000-deadbeefdead';
+  const { MemoryRepositoryError } = require('../../src/memory');
   let caught;
-  let result;
   try {
-    result = await rt.respond({
+    await rt.respond({
       pilotInstanceId: PILOT_A,
       userId: orphan,
       userRole: 'senior',
@@ -312,8 +301,12 @@ test('conversation-mounted: memory errors fail open through the companion reader
   } catch (err) {
     caught = err;
   }
-  assert.equal(caught, undefined, 'runtime must not throw when memory fails open');
-  assert.ok(result, 'runtime must return a result');
-  assert.equal(result.memoryCount, 0, 'memoryCount must be 0 when the reader failed open');
-  assert.equal(sdk.getCalls(), 1, 'SDK is called exactly once with the empty-memory prompt');
+  assert.ok(caught);
+  assert.ok(caught instanceof MemoryRepositoryError, 'must be MemoryRepositoryError');
+  assert.equal(caught.message, 'memory operation failed');
+  assert.equal(caught.detail, undefined);
+  assert.equal(caught.where, undefined);
+  assert.equal(caught.routine, undefined);
+  assert.equal(caught.message.includes(orphan), false);
+  assert.equal(sdk.getCalls(), 0, 'SDK must NOT be called when memory access fails');
 });
