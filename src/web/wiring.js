@@ -120,7 +120,7 @@ function createTestDoorWiring(options) {
     if (!params || typeof params !== 'object') {
       throw new Error('handleChat: params object is required');
     }
-    const { pilotInstanceId, userId, userRole, userMessage } = params;
+    const { pilotInstanceId, userId, userRole, userMessage, companionConfig } = params;
     if (typeof pilotInstanceId !== 'string' || !UUID_RE.test(pilotInstanceId)) {
       const err = new Error('handleChat: pilotInstanceId must be a UUID');
       err.userClass = 'bad_request';
@@ -148,6 +148,7 @@ function createTestDoorWiring(options) {
       userId,
       userRole,
       userMessage,
+      companionConfig,
     });
 
     const bundle = {
@@ -158,6 +159,9 @@ function createTestDoorWiring(options) {
       policyRef: result.decision.policyRef,
       response: typeof result.response === 'string' ? result.response : '',
       memoryCount: typeof result.memoryCount === 'number' ? result.memoryCount : 0,
+      auditVerdict: result.auditVerdict || 'N/A',
+      auditDetails: result.auditDetails || 'no-audit',
+      auditReason: result.auditReason,
     };
     bundle.executed = bundle.outcome === 'executed';
     return bundle;

@@ -89,8 +89,9 @@
 
     const summary = document.createElement('summary');
     const status = g.outcome || 'unknown';
-    summary.innerHTML = 'Governance &amp; audit · '
-      + '<span class="outcome-' + status + '">' + status + '</span>';
+    const auditStatus = g.auditVerdict && g.auditVerdict !== 'N/A' ? ` · audit ${g.auditVerdict.toLowerCase()}` : '';
+    summary.innerHTML = 'Governance · '
+      + '<span class="outcome-' + status + '">' + status + '</span>' + auditStatus;
     details.appendChild(summary);
 
     const dl = document.createElement('dl');
@@ -103,6 +104,12 @@
     appendKv(dl, 'staged?',      g.outcome === 'staged' ? 'yes' : 'no');
     appendKv(dl, 'rejected?',    g.outcome === 'rejected' ? 'yes' : 'no');
     appendKv(dl, 'allowed?',     g.outcome === 'executed' ? 'yes' : 'no');
+    if (g.auditVerdict && g.auditVerdict !== 'N/A') {
+      appendKv(dl, 'auditVerdict', String(g.auditVerdict));
+      if (g.auditReason) {
+        appendKv(dl, 'auditReason', String(g.auditReason));
+      }
+    }
     details.appendChild(dl);
     return details;
   }

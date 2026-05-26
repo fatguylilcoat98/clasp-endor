@@ -35,6 +35,7 @@
  */
 
 const { buildPrompt } = require('./prompt');
+const { auditResponse } = require('./auditor');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VALID_ROLES = new Set(['senior', 'family', 'caregiver', 'admin', 'system']);
@@ -169,7 +170,7 @@ function createConversationRuntime(options) {
 
   async function respond(input) {
     validateInputs(input, cfg);
-    const { pilotInstanceId, userId, userRole, userMessage, memoryLimit } = input;
+    const { pilotInstanceId, userId, userRole, userMessage, memoryLimit, companionConfig } = input;
 
     const limit = memoryLimit || cfg.defaultMemoryLimit;
     const memoryRows = await companionReader.readVisibleMemories({
@@ -179,7 +180,7 @@ function createConversationRuntime(options) {
       limit,
     });
 
-    const prompt = buildPrompt({ memoryRows, userMessage });
+    const prompt = buildPrompt({ memoryRows, userMessage, companionConfig });
 
     const sdkRequest = {
       model: cfg.model,
@@ -194,6 +195,12 @@ function createConversationRuntime(options) {
     const response = await modelClient.messages.create(sdkRequest);
     const responseText = extractResponseText(response);
 
+    // Audit the response against retrieved memories
+    const auditResult = await auditResponse(userMessage, responseText, {
+      memoryRows,
+      logger
+    });
+
     if (logger) {
       // Metadata only — never the user message, never the rows,
       // never the response text. The sentinel-scan unit test
@@ -205,12 +212,17 @@ function createConversationRuntime(options) {
         actor_role: userRole,
         memory_count: memoryRows.length,
         response_chars: responseText.length,
+        audit_verdict: auditResult.verdict,
+        audit_details: auditResult.details,
       });
     }
 
     return {
       response: responseText,
       memoryCount: memoryRows.length,
+      auditVerdict: auditResult.verdict,
+      auditDetails: auditResult.details,
+      auditReason: auditResult.reason,
     };
   }
 

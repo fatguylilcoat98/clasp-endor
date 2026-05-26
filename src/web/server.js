@@ -262,11 +262,18 @@ function createTestDoorServer(options) {
 
     let bundle;
     try {
+      // Build companion configuration from session
+      const companionConfig = {
+        name: session.companionLabel || 'Assistant',
+        persona: 'You are a helpful and friendly AI companion.'
+      };
+
       bundle = await wiring.handleChat({
         pilotInstanceId,
         userId: session.userId,
         userRole: session.userRole,
         userMessage,
+        companionConfig,
       });
     } catch (err) {
       const errorClass = describeErrClass(err);
