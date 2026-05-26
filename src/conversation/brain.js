@@ -657,7 +657,8 @@ async function processResponseGenerator(userMessage, brainState, modelClient, co
       urgencyContext: attentionOutput,
       safetyGuidelines: safetyOutput.safetyRecommendations,
       truthGuidelines: safetyOutput.truthGuidelines,
-      reflections: qualityOutput.reflections
+      reflections: qualityOutput.reflections,
+      userMessage
     });
 
     const sdkRequest = {
@@ -704,11 +705,21 @@ function buildCognitiveBrainPrompt(brainInputs) {
     urgencyContext,
     safetyGuidelines,
     truthGuidelines,
-    reflections
+    reflections,
+    userMessage
   } = brainInputs;
 
   const companionName = companionConfig?.name || 'Assistant';
   const companionPersona = companionConfig?.persona || 'You are a helpful AI companion';
+
+  // Detect if user is asking about stored information
+  const userMessageLower = (userMessage || '').toLowerCase();
+  const isAskingAboutMemories =
+    userMessageLower.includes('what do you know about me') ||
+    userMessageLower.includes('what have i told you') ||
+    userMessageLower.includes('what do you remember') ||
+    userMessageLower.includes('tell me about myself') ||
+    userMessageLower.includes('what did i tell you about');
 
   // Build enhanced system prompt with brain state
   let systemPrompt = `You are ${companionName}, a companion assistant.
@@ -744,11 +755,36 @@ ${reflections.slice(0, 3).map(r => `- Consider: ${r}`).join('\n')}`;
   }
 
   if (memoryContext && memoryContext !== 'No specific memories available.') {
-    systemPrompt += `\n\nRELEVANT MEMORIES:
-${memoryContext}`;
+    systemPrompt += `\n\nRELEVANT MEMORIES ABOUT THIS USER:
+${memoryContext}
+
+MEMORY USAGE INSTRUCTIONS:`;
+
+    if (isAskingAboutMemories) {
+      systemPrompt += `
+- THE USER IS ASKING ABOUT STORED INFORMATION: Actively reference and summarize the memories above
+- List the specific facts you know about them based on the memories provided
+- Be specific about what they've told you (preferences, relationships, etc.)
+- If memories are limited, acknowledge what you do know and what you don't know yet`;
+    } else {
+      systemPrompt += `
+- When appropriate, naturally reference relevant memories in your response
+- Build on previous conversations by acknowledging what you remember
+- If the user mentions topics related to stored memories, show you remember`;
+    }
+
+    systemPrompt += `
+- Always incorporate relevant memories naturally into your responses
+- If asked about things you don't have memories about, be honest about not having that information stored`;
+  } else {
+    if (isAskingAboutMemories) {
+      systemPrompt += `\n\nIMPORTANT: The user is asking about stored information, but no specific memories about this user are currently available. Be honest that you don't have stored memories about them yet, but express interest in learning about them.`;
+    } else {
+      systemPrompt += `\n\nNo specific memories about this user are currently available.`;
+    }
   }
 
-  systemPrompt += `\n\nRespond as ${companionName} would, incorporating all the above context appropriately.`;
+  systemPrompt += `\n\nRespond as ${companionName} would, using all the above context and memories to provide personalized, informed responses.`;
 
   return {
     system: systemPrompt,
