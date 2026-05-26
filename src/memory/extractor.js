@@ -147,39 +147,104 @@ function extractWithPatterns(userMessage) {
       },
       confidence: 0.95
     },
-    // Natural-language correction: "<Name> is not (actually) my <relationship>"
-    // Optionally prefixed with "Correction:" / "Actually,". This is the
-    // phrasing the operator's live test uncovered as a retrieval
-    // integrity bug (extractor previously emitted nothing, no
-    // CORRECTION row got stored, the seeded fact stayed canonical).
+    // ----------------------------------------------------------
+    // Natural-language correction patterns. The terminator in every
+    // pattern below is `(?=[\s,.!?…]|$)` — any whitespace OR any
+    // punctuation OR the unicode ellipsis OR end-of-string. The
+    // previous `[,.!?]` terminator missed:
+    //   - unicode ellipsis "…" (single char, not three dots)
+    //   - trailing context: "Daniel is not my brother and never has been"
+    //   - any non-period sentence end the user might type
+    // ----------------------------------------------------------
+
+    // "<Name> is not (actually) my <relationship>"
     {
-      pattern: /^(?:correction\s*[:\-]?\s*)?(?:actually,?\s+)?([a-zA-Z][a-zA-Z\s'\-]*?)\s+is\s+not\s+(?:actually\s+)?my\s+(brother|sister|wife|husband|partner|mother|father|mom|dad|son|daughter|spouse|girlfriend|boyfriend)(?:[,.!?]|$)/i,
+      pattern: /^(?:correction\s*[:\-]?\s*)?(?:actually,?\s+)?([a-zA-Z][a-zA-Z\s'\-]*?)\s+is\s+not\s+(?:actually\s+)?my\s+(brother|sister|wife|husband|partner|mother|father|mom|dad|son|daughter|spouse|girlfriend|boyfriend)(?=[\s,.!?…]|$)/i,
       extract: (match) => `CORRECTION: User does not have ${match[2].toLowerCase()} named ${match[1].trim()}`,
       confidence: 0.95
     },
-    // Reverse phrasing: "my <relationship> is not <Name>" — catches
-    // "my brother is not Daniel" / "my sister is not Maria".
+    // "my <relationship> is not <Name>"
     {
-      pattern: /^(?:correction\s*[:\-]?\s*)?(?:actually,?\s+)?my\s+(brother|sister|wife|husband|partner|mother|father|mom|dad|son|daughter|spouse|girlfriend|boyfriend)\s+is\s+not\s+(?:named\s+|called\s+)?([a-zA-Z][a-zA-Z\s'\-]*?)(?:[,.!?]|$)/i,
+      pattern: /^(?:correction\s*[:\-]?\s*)?(?:actually,?\s+)?my\s+(brother|sister|wife|husband|partner|mother|father|mom|dad|son|daughter|spouse|girlfriend|boyfriend)\s+is\s+not\s+(?:named\s+|called\s+)?([a-zA-Z][a-zA-Z'\-]+?)(?=[\s,.!?…]|$)/i,
       extract: (match) => `CORRECTION: User does not have ${match[1].toLowerCase()} named ${match[2].trim()}`,
       confidence: 0.95
+    },
+    // "(do not | don't) treat <Name> as (my|a|an|the) <relationship>"
+    {
+      pattern: /(?:do\s+not|don't)\s+treat\s+([a-zA-Z][a-zA-Z'\-]+)\s+as\s+(?:my\s+|a\s+|an\s+|the\s+)?(brother|sister|wife|husband|partner|mother|father|mom|dad|son|daughter|spouse|girlfriend|boyfriend|friend|relative|family\s+member|family)(?=[\s,.!?…]|$)/i,
+      extract: (match) => {
+        const rel = match[2].toLowerCase().replace(/\s+/g, ' ');
+        return `CORRECTION: User does not have ${rel} named ${match[1].trim()}`;
+      },
+      confidence: 0.95
+    },
+    // "<Name> is not (actually) related to me" — generic non-relation
+    // without a specific role; recorded as a coarse correction so the
+    // writer's substring search can still find rows mentioning the
+    // name.
+    {
+      pattern: /^(?:correction\s*[:\-]?\s*)?(?:actually,?\s+)?([a-zA-Z][a-zA-Z\s'\-]*?)\s+is\s+not\s+(?:actually\s+)?related\s+to\s+me(?=[\s,.!?…]|$)/i,
+      extract: (match) => `CORRECTION: User is not related to ${match[1].trim()}`,
+      confidence: 0.9
     },
     // Generic "Correction: <anything>" prefix that doesn't fit the
     // structured patterns above. Lower confidence because the content
     // is unparsed, but the prefix marks it as a correction so the
-    // writer's correction loop will run a substring-based search.
+    // writer's correction loop runs a substring-based search.
     {
-      pattern: /^correction\s*[:\-]\s*(.+?)(?:[.!?]|$)/i,
+      pattern: /^correction\s*[:\-]\s*(.+?)(?:[.!?…]|$)/i,
       extract: (match) => `CORRECTION: ${match[1].trim()}`,
       confidence: 0.85
     },
+    // "Forget that <X>" / "Forget that <relationship>" — looser than
+    // the old "forget what I said about" pattern.
     {
-      pattern: /(?:forget|ignore)\s+(?:what\s+i\s+said\s+about|that\s+i\s+mentioned)\s+(.+?)(?:[,.!?]|$)/i,
+      pattern: /(?:forget|ignore)\s+(?:what\s+i\s+said\s+about|that\s+i\s+mentioned)\s+(.+?)(?:[,.!?…]|$)/i,
       extract: (match) => `RETRACTION: Ignore previous statements about ${match[1].trim()}`,
       confidence: 0.9
     },
     {
-      pattern: /(?:that's\s+(?:wrong|incorrect|not\s+true)|i\s+misspoke|i\s+made\s+a\s+mistake)(?:\s*[,.]?\s*)?(.+?)(?:[,.!?]|$)/i,
+      pattern: /^(?:please\s+)?(?:forget|ignore)\s+that\s+(.+?)(?:[,.!?…]|$)/i,
+      extract: (match) => `RETRACTION: Ignore previous statements about ${match[1].trim()}`,
+      confidence: 0.85
+    },
+    // "Do not remember X" / "Don't remember that".
+    {
+      pattern: /(?:do\s+not|don't)\s+remember\s+(?:that\s+)?(.+?)(?:[,.!?…]|$)/i,
+      extract: (match) => `RETRACTION: Ignore previous statements about ${match[1].trim()}`,
+      confidence: 0.85
+    },
+    // Generic retractions WITHOUT a specific target — "I never said
+    // that", "That information is wrong", "That's wrong", "I
+    // misspoke", "I made a mistake". These cannot be auto-routed to
+    // a specific memory by the writer (there's no entity to search
+    // for), so they're stored as a generic correction marker. The
+    // model sees them in retrieval and, combined with the
+    // UNCERTAINTY_DIRECTIVE in the system prompt, must hedge any
+    // claim that could plausibly be the thing the user retracted.
+    {
+      pattern: /^(?:i\s+)?never\s+said\s+(?:that|it)(?=[\s,.!?…]|$)/i,
+      extract: () => 'CORRECTION: User asserts they never said the previously-stated fact',
+      confidence: 0.85
+    },
+    {
+      pattern: /^that(?:'s|\s+is)?\s+(?:information\s+)?(?:wrong|incorrect|not\s+(?:true|right))(?=[\s,.!?…]|$)/i,
+      extract: () => 'CORRECTION: User asserts previously-stated information is wrong',
+      confidence: 0.85
+    },
+    {
+      pattern: /^(?:that\s+(?:information|fact)\s+is\s+(?:wrong|incorrect))(?=[\s,.!?…]|$)/i,
+      extract: () => 'CORRECTION: User asserts previously-stated information is wrong',
+      confidence: 0.85
+    },
+    {
+      pattern: /^(?:i\s+misspoke|i\s+made\s+a\s+mistake)(?=[\s,.!?…]|$)/i,
+      extract: () => 'CORRECTION: User retracted a previous statement',
+      confidence: 0.8
+    },
+    // Existing "that's wrong + tail" pattern. Kept for completeness.
+    {
+      pattern: /(?:that's\s+(?:wrong|incorrect|not\s+true)|i\s+misspoke|i\s+made\s+a\s+mistake)(?:\s*[,.]?\s*)?(.+?)(?:[,.!?…]|$)/i,
       extract: (match) => `CORRECTION: Previous statement about ${match[1].trim()} was incorrect`,
       confidence: 0.85
     },
