@@ -107,7 +107,7 @@ function extractMemoriableFacts(userMessage, options = {}) {
         }
       } catch (error) {
         if (logger) {
-          logger('warn', 'memory.extraction.pattern_error', {
+          logger.warn('memory.extraction.pattern_error', {
             pattern: pattern.toString(),
             error: error.message
           });
@@ -125,7 +125,7 @@ function extractMemoriableFacts(userMessage, options = {}) {
   });
 
   if (logger && filteredFacts.length > 0) {
-    logger('info', 'memory.extraction.completed', {
+    logger.info('memory.extraction.completed', {
       message_length: message.length,
       facts_extracted: filteredFacts.length,
       avg_confidence: filteredFacts.reduce((sum, f) => sum + f.confidence, 0) / filteredFacts.length

@@ -68,7 +68,7 @@ function createMemoryWriter(options = {}) {
 
     if (qualifiedFacts.length === 0) {
       if (logger) {
-        logger('debug', 'memory.writer.no_facts', {
+        logger.info('memory.writer.no_facts', {
           message_length: userMessage.length,
           facts_found: facts.length,
           min_confidence: minConfidence
@@ -103,7 +103,7 @@ function createMemoryWriter(options = {}) {
 
       } catch (error) {
         if (logger) {
-          logger('warn', 'memory.writer.store_failed', {
+          logger.warn('memory.writer.store_failed', {
             fact_content_length: fact.content.length,
             confidence: fact.confidence,
             error: error.message
@@ -114,7 +114,7 @@ function createMemoryWriter(options = {}) {
     }
 
     if (logger) {
-      logger('info', 'memory.writer.completed', {
+      logger.info('memory.writer.completed', {
         pilot_instance_id: pilotInstanceId,
         user_id: userId,
         facts_extracted: facts.length,
