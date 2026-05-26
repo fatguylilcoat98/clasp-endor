@@ -11,13 +11,13 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- 001: BASELINE - Tenancy and identity
 -- =====================================================================
 
-CREATE TABLE pilot_instances (
+CREATE TABLE IF NOT EXISTS pilot_instances (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_name    TEXT NOT NULL,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
   id                 UUID NOT NULL DEFAULT gen_random_uuid(),
   pilot_instance_id  UUID NOT NULL REFERENCES pilot_instances(id),
   username           TEXT NOT NULL,
@@ -36,7 +36,7 @@ CREATE UNIQUE INDEX users_one_senior_per_pilot
 -- 002: PROFILES - Companion and person configuration
 -- =====================================================================
 
-CREATE TABLE companion_profile (
+CREATE TABLE IF NOT EXISTS companion_profile (
   id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id  UUID NOT NULL REFERENCES pilot_instances(id),
   companion_name     TEXT NOT NULL,
@@ -48,7 +48,7 @@ CREATE TABLE companion_profile (
   UNIQUE (pilot_instance_id)
 );
 
-CREATE TABLE supported_person_profile (
+CREATE TABLE IF NOT EXISTS supported_person_profile (
   id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id  UUID NOT NULL REFERENCES pilot_instances(id),
   user_id            UUID NOT NULL,
@@ -64,7 +64,7 @@ CREATE TABLE supported_person_profile (
     REFERENCES users (pilot_instance_id, id)
 );
 
-CREATE TABLE circle_contacts (
+CREATE TABLE IF NOT EXISTS circle_contacts (
   id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id  UUID NOT NULL REFERENCES pilot_instances(id),
   senior_user_id     UUID NOT NULL,
@@ -82,7 +82,7 @@ CREATE TABLE circle_contacts (
 -- 003: VAULTS - Password-locked memory infrastructure
 -- =====================================================================
 
-CREATE TABLE memory_vaults (
+CREATE TABLE IF NOT EXISTS memory_vaults (
   id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id     UUID NOT NULL REFERENCES pilot_instances(id),
   user_id               UUID NOT NULL,
@@ -99,7 +99,7 @@ CREATE TABLE memory_vaults (
     REFERENCES users (pilot_instance_id, id)
 );
 
-CREATE TABLE memory_vault_sessions (
+CREATE TABLE IF NOT EXISTS memory_vault_sessions (
   id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id  UUID NOT NULL,
   vault_id           UUID NOT NULL,
@@ -117,7 +117,7 @@ CREATE TABLE memory_vault_sessions (
 -- 006: SETUP STATE - Onboarding tracking (before memory_store reference)
 -- =====================================================================
 
-CREATE TABLE setup_state (
+CREATE TABLE IF NOT EXISTS setup_state (
   id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id  UUID NOT NULL REFERENCES pilot_instances(id),
   step_key           TEXT NOT NULL,
@@ -133,7 +133,7 @@ CREATE TABLE setup_state (
 -- 004: MEMORY STORE with 015 enhancement (memory_status)
 -- =====================================================================
 
-CREATE TABLE memory_store (
+CREATE TABLE IF NOT EXISTS memory_store (
   id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id    UUID NOT NULL REFERENCES pilot_instances(id),
   owning_user_id       UUID NOT NULL,
@@ -186,7 +186,7 @@ WHERE memory_status = 'WORKING_ACTIVE' AND active = true;
 -- 005: AUDIT LOG - Governance audit trail
 -- =====================================================================
 
-CREATE TABLE governance_audit_log (
+CREATE TABLE IF NOT EXISTS governance_audit_log (
   id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id  UUID NOT NULL REFERENCES pilot_instances(id),
   memory_id          UUID REFERENCES memory_store(id),
@@ -220,7 +220,7 @@ CREATE TRIGGER governance_audit_log_append_only
 -- 008: REVIEW QUEUE - Review staging
 -- =====================================================================
 
-CREATE TABLE governance_review_queue (
+CREATE TABLE IF NOT EXISTS governance_review_queue (
   id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id    UUID NOT NULL REFERENCES pilot_instances(id),
   decision_intent_type TEXT NOT NULL
@@ -253,7 +253,7 @@ CREATE TABLE governance_review_queue (
 -- 009: REVIEW DECISIONS - Review outcomes
 -- =====================================================================
 
-CREATE TABLE governance_review_decisions (
+CREATE TABLE IF NOT EXISTS governance_review_decisions (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id   UUID NOT NULL REFERENCES pilot_instances(id),
   review_queue_id     UUID NOT NULL,
@@ -277,7 +277,7 @@ CREATE TABLE governance_review_decisions (
 -- 010-014: EXECUTION WORKFLOW TABLES
 -- =====================================================================
 
-CREATE TABLE governance_execution_authorizations (
+CREATE TABLE IF NOT EXISTS governance_execution_authorizations (
   id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id     UUID NOT NULL REFERENCES pilot_instances(id),
   review_decision_id    UUID NOT NULL,
@@ -296,7 +296,7 @@ CREATE TABLE governance_execution_authorizations (
   UNIQUE (pilot_instance_id, id)
 );
 
-CREATE TABLE governance_execution_claims (
+CREATE TABLE IF NOT EXISTS governance_execution_claims (
   id                        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id         UUID NOT NULL REFERENCES pilot_instances(id),
   execution_authorization_id UUID NOT NULL,
@@ -317,7 +317,7 @@ CREATE TABLE governance_execution_claims (
   UNIQUE (pilot_instance_id, id)
 );
 
-CREATE TABLE governance_execution_attempts (
+CREATE TABLE IF NOT EXISTS governance_execution_attempts (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id   UUID NOT NULL REFERENCES pilot_instances(id),
   execution_claim_id  UUID NOT NULL,
@@ -338,7 +338,7 @@ CREATE TABLE governance_execution_attempts (
   UNIQUE (pilot_instance_id, id)
 );
 
-CREATE TABLE governance_execution_outcomes (
+CREATE TABLE IF NOT EXISTS governance_execution_outcomes (
   id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id    UUID NOT NULL REFERENCES pilot_instances(id),
   execution_attempt_id UUID NOT NULL,
@@ -363,7 +363,7 @@ CREATE TABLE governance_execution_outcomes (
   UNIQUE (pilot_instance_id, id)
 );
 
-CREATE TABLE governance_execution_verifications (
+CREATE TABLE IF NOT EXISTS governance_execution_verifications (
   id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pilot_instance_id    UUID NOT NULL REFERENCES pilot_instances(id),
   execution_outcome_id UUID NOT NULL,
