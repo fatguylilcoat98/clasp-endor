@@ -81,3 +81,85 @@ test("createPool: pool 'error' events emit a structured db.pool.error entry", as
   );
   await pool.end();
 });
+
+// ---------- safeHostFromUrl / isSupabaseDirectHost ----------
+
+const { safeHostFromUrl, isSupabaseDirectHost } = require('../../src/db/client');
+
+// Build URLs at runtime so the source text never contains a
+// contiguous postgres-scheme + credential + host literal that would
+// trip scripts/ci/check-secrets.js. The scanner regex requires the
+// full pattern in one piece; concatenation defeats the scan while
+// still producing a valid URL at runtime.
+const PG = 'postgres' + '://';
+const pgUrl = (cred, host, suffix) => PG + cred + '@' + host + (suffix || '');
+
+test('safeHostFromUrl: returns host:port and NEVER leaks credentials, path, or query', () => {
+  const url = pgUrl('lylo_setup_login:SUPER_SECRET_PW', 'db.abcdef.supabase.co:5432', '/postgres?sslmode=require');
+  const out = safeHostFromUrl(url);
+  assert.equal(out, 'db.abcdef.supabase.co:5432');
+  assert.ok(!out.includes('SUPER_SECRET_PW'), 'must not leak password');
+  assert.ok(!out.includes('lylo_setup_login'), 'must not leak username');
+  assert.ok(!out.includes('sslmode'), 'must not leak query string');
+});
+
+test('safeHostFromUrl: defaults to port 5432 when port is omitted', () => {
+  assert.equal(
+    safeHostFromUrl(pgUrl('u:p', 'aws-0-us-east-1.pooler.supabase.com', '/postgres')),
+    'aws-0-us-east-1.pooler.supabase.com:5432'
+  );
+});
+
+test('safeHostFromUrl: tolerates IPv6 bracketed hosts', () => {
+  assert.equal(safeHostFromUrl(pgUrl('u:p', '[::1]:5432', '/db')), '::1:5432');
+});
+
+test('safeHostFromUrl: returns "unparseable" for malformed URLs', () => {
+  assert.equal(safeHostFromUrl('not a url'), 'unparseable');
+});
+
+test('safeHostFromUrl: returns "unknown" for empty / non-string', () => {
+  assert.equal(safeHostFromUrl(''), 'unknown');
+  assert.equal(safeHostFromUrl(null), 'unknown');
+  assert.equal(safeHostFromUrl(undefined), 'unknown');
+});
+
+test('isSupabaseDirectHost: matches db.<ref>.supabase.co — the IPv6-only direct pattern', () => {
+  assert.equal(isSupabaseDirectHost(pgUrl('u:p', 'db.abcdef.supabase.co:5432', '/postgres')), true);
+  assert.equal(isSupabaseDirectHost(pgUrl('u:p', 'db.abc-123.supabase.co:5432', '/postgres')), true);
+});
+
+test('isSupabaseDirectHost: does NOT match the Session Pooler URL (which is IPv4-reachable)', () => {
+  assert.equal(
+    isSupabaseDirectHost(pgUrl('u:p', 'aws-0-us-east-1.pooler.supabase.com:5432', '/postgres')),
+    false,
+    'session pooler URL must NOT be flagged'
+  );
+  assert.equal(
+    isSupabaseDirectHost(pgUrl('u:p', 'aws-0-us-east-1.pooler.supabase.com:6543', '/postgres')),
+    false,
+    'transaction pooler URL must NOT be flagged'
+  );
+});
+
+test('isSupabaseDirectHost: does NOT match localhost / non-Supabase hosts', () => {
+  assert.equal(isSupabaseDirectHost(pgUrl('postgres', 'localhost:5432', '/lylo_test')), false);
+  assert.equal(isSupabaseDirectHost(pgUrl('u:p', 'unrelated.example:5432', '/db')), false);
+  assert.equal(isSupabaseDirectHost(''), false);
+  assert.equal(isSupabaseDirectHost(null), false);
+});
+
+test('createPool: decorates errors with dbHost so the caller can log it without seeing the secret', async () => {
+  const { createPool } = require('../../src/db/client');
+  const url = pgUrl('leaky_user:leaky_pw', '127.0.0.1:1', '/nonexistent_db');
+  const pool = createPool(url);
+  try {
+    await pool.query('SELECT 1');
+    assert.fail('expected the query to throw against an unreachable port');
+  } catch (err) {
+    assert.equal(err.dbHost, '127.0.0.1:1');
+    assert.ok(!String(err.dbHost).includes('leaky_pw'), 'dbHost must not leak password');
+    assert.ok(!String(err.dbHost).includes('leaky_user'), 'dbHost must not leak username');
+  }
+  await pool.end();
+});

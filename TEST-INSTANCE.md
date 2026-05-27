@@ -97,6 +97,20 @@ what makes login work.
 | `LYLO_BOOTSTRAP_ADMIN_EMAILS` | Comma-separated emails that auto-receive `role='admin'` on first signup. Promotion of existing users is intentionally NOT supported via this var — those go through a future admin flow. |
 | `LYLO_SIGNUP_ALLOWLIST` | Optional. When set, only listed emails (or `*@domain.com` patterns — Step 2) may sign up. Empty/unset = open signup. **Flip this on the moment the deployment carries anything real.** The test door is currently open. |
 
+### Supabase Postgres connection URL — IPv4 vs IPv6
+
+Supabase offers three connection-URL types in the **Database → Connection** dashboard. Pick the right one for your host or every login will fail with `ENETUNREACH`.
+
+| URL type | Hostname pattern | DNS records | Use it when |
+|---|---|---|---|
+| **Direct Connection** | `db.{project-ref}.supabase.co:5432` | AAAA only (IPv6) | Your host has IPv6 egress. Render free tier and most paid tiers do NOT — direct will fail. |
+| **Session Pooler** | `aws-0-{region}.pooler.supabase.com:5432` | A (IPv4) and AAAA | **Use this on Render and any IPv4-only host.** Full session semantics — `SET LOCAL`, prepared statements, all working. |
+| **Transaction Pooler** | `aws-0-{region}.pooler.supabase.com:6543` | A (IPv4) and AAAA | Only for stateless query workloads. Not suitable here — `withMemoryContext` binds session vars inside a transaction and needs session semantics. |
+
+`LYLO_APP_DATABASE_URL` and `LYLO_SETUP_DATABASE_URL` should both be set to the **Session Pooler** URL on Render. The server prints a warning at boot if either points at `db.*.supabase.co` (the direct-only pattern), and identity-failure logs include the failing `db_host` and `address:port` so an operator can see exactly what the kernel rejected.
+
+If you see `web.login.identity_failed` with `error_class: ENETUNREACH`, you have a Direct Connection URL on an IPv4-only host. Switch the env var to the Session Pooler URL and redeploy.
+
 Required Supabase project settings:
 
 - **Auth → Settings → Confirm email**: ON (operator decision, recommended).

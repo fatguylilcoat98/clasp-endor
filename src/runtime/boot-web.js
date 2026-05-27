@@ -39,6 +39,7 @@ const { createRecentBuffer } = require('../web/recent');
 const { createSupabaseAuthClient } = require('../web/supabase-auth');
 const { createJwksClient } = require('../web/jwks-client');
 const { createIdentityResolver, bootstrapAdminEmailsFromEnv } = require('../web/identity');
+const { isSupabaseDirectHost, safeHostFromUrl } = require('../db/client');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DEFAULT_PORT = 3000;
@@ -141,6 +142,30 @@ async function bootWeb(rawEnv) {
   if (errors.length > 0) {
     for (const message of errors) logger.error('boot.web.env_error', { message });
     throw new Error('boot.web: environment is incomplete');
+  }
+
+  // Supabase Direct Connection URLs (`db.{project-ref}.supabase.co`)
+  // publish AAAA records only. On IPv4-only egress (Render free / most
+  // tiers), Node resolves to an IPv6 address and the kernel returns
+  // ENETUNREACH because there is no IPv6 route. The fix is to use the
+  // Session Pooler URL (`aws-0-{region}.pooler.supabase.com:5432`)
+  // which publishes A records. We warn loudly at boot — we do NOT
+  // fail boot, because some hosting providers DO support IPv6 egress
+  // and the direct URL works fine there.
+  for (const [name, value] of [
+    ['LYLO_APP_DATABASE_URL', env.LYLO_APP_DATABASE_URL],
+    ['LYLO_SETUP_DATABASE_URL', env.LYLO_SETUP_DATABASE_URL],
+  ]) {
+    if (isSupabaseDirectHost(value)) {
+      logger.warn('boot.web.supabase_direct_url_warning', {
+        var_name: name,
+        db_host: safeHostFromUrl(value),
+        hint: 'Direct Supabase URLs (db.<ref>.supabase.co) are IPv6-only.'
+          + ' On IPv4-only egress (Render free tier and most paid tiers)'
+          + ' this causes ENETUNREACH on every connection. Switch to the'
+          + ' Session Pooler URL: aws-0-<region>.pooler.supabase.com:5432',
+      });
+    }
   }
 
   const repoRoot = path.resolve(__dirname, '..', '..');

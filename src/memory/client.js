@@ -78,6 +78,13 @@ function createMemoryPool(databaseUrl, options) {
   const opts = options || {};
   const log = opts.log || (() => {});
   const sslConfig = getSSLConfig(databaseUrl);
+  // Safe host:port for error logs. Never includes user/password/path.
+  let dbHost = 'unknown';
+  try {
+    const u = new URL(databaseUrl);
+    const h = u.hostname.replace(/^\[|\]$/g, '');
+    dbHost = `${h}:${u.port || '5432'}`;
+  } catch { /* malformed URL — the Pool constructor will surface it */ }
   const pool = new Pool({
     connectionString: databaseUrl,
     ssl: sslConfig,
@@ -87,7 +94,12 @@ function createMemoryPool(databaseUrl, options) {
     statement_timeout: opts.statementTimeoutMillis || 5000,
   });
   pool.on('error', (err) => {
-    log('error', 'memory.pool.error', { error_class: describeErrorClass(err) });
+    log('error', 'memory.pool.error', {
+      error_class: describeErrorClass(err),
+      db_host: dbHost,
+      address: err && err.address,
+      port: err && err.port,
+    });
   });
   const handle = new MemoryPoolHandle();
   POOLS.set(handle, pool);

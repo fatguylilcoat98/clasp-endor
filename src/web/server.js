@@ -286,8 +286,17 @@ function createTestDoorServer(options) {
     try {
       resolved = await identity.resolveOrProvision({ authUserId, email });
     } catch (err) {
+      // Decorate the failure log with whichever network-level
+      // detail the underlying pg / net error carried, plus the
+      // pool's safe host (set by src/db/client.js#createPool).
+      // No credentials in any field — host is parsed from the URL
+      // and address/port come from node's net layer on connection
+      // errors (ENETUNREACH, ECONNREFUSED, ETIMEDOUT).
       log('warn', `${eventType}.identity_failed`, {
         error_class: describeErrClass(err),
+        db_host: err && err.dbHost,
+        address: err && err.address,
+        port: err && err.port,
       });
       return jsonResponse(res, 502, { error: 'unable to complete sign-in' });
     }

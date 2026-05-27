@@ -30,6 +30,41 @@ function isLocalConnectionUrl(databaseUrl) {
   }
 }
 
+// Extract the hostname:port from a database URL — never the user,
+// password, database name, or any query parameters. Safe to log.
+function safeHostFromUrl(databaseUrl) {
+  if (typeof databaseUrl !== 'string' || databaseUrl.length === 0) return 'unknown';
+  try {
+    const u = new URL(databaseUrl);
+    const host = u.hostname.replace(/^\[|\]$/g, '');
+    const port = u.port || '5432';
+    return `${host}:${port}`;
+  } catch {
+    return 'unparseable';
+  }
+}
+
+// Supabase's Direct Connection hostname pattern: `db.{project-ref}.supabase.co`.
+// Direct hostnames publish AAAA records only — no A records. On IPv4-only
+// egress (e.g. Render's free tier and most paid tiers), Node resolves to
+// an IPv6 address and the kernel returns ENETUNREACH because there's no
+// IPv6 route. The fix is to switch the URL to Supabase's Session Pooler
+// (aws-0-{region}.pooler.supabase.com:5432), which publishes A records.
+// We do NOT mutate the URL; we only warn at boot so the operator can
+// see why connections fail.
+const SUPABASE_DIRECT_HOST_RE = /^db\.[a-z0-9-]+\.supabase\.co$/i;
+
+function isSupabaseDirectHost(databaseUrl) {
+  if (typeof databaseUrl !== 'string' || databaseUrl.length === 0) return false;
+  try {
+    const u = new URL(databaseUrl);
+    const host = u.hostname.replace(/^\[|\]$/g, '');
+    return SUPABASE_DIRECT_HOST_RE.test(host);
+  } catch {
+    return false;
+  }
+}
+
 function getSSLConfig(databaseUrl) {
   if (isLocalConnectionUrl(databaseUrl)) return undefined;
   const caCertPath = process.env.DB_CA_CERT_PATH || path.join(__dirname, '..', '..', 'certs', 'supabase-ca.crt');
@@ -65,10 +100,15 @@ function describeDbError(err) {
 // callback receives `(level, event, fields)` for any idle-pool error,
 // so a transient backend failure does not become an unhandled 'error'
 // event (and crash the process).
+//
+// Errors thrown from pool.query / pool.connect are decorated with
+// `dbHost` (extracted from the URL, no credentials) so the caller
+// can log WHICH connection failed without seeing the secret.
 function createPool(databaseUrl, options) {
   const opts = options || {};
   const log = opts.log || (() => {});
   const sslConfig = getSSLConfig(databaseUrl);
+  const dbHost = safeHostFromUrl(databaseUrl);
   const pool = new Pool({
     connectionString: databaseUrl,
     ssl: sslConfig,
@@ -78,8 +118,41 @@ function createPool(databaseUrl, options) {
     statement_timeout: 5000,
   });
   pool.on('error', (err) => {
-    log('error', 'db.pool.error', { error_class: describeDbError(err) });
+    log('error', 'db.pool.error', {
+      error_class: describeDbError(err),
+      db_host: dbHost,
+      address: err && err.address,
+      port: err && err.port,
+    });
   });
+
+  // Wrap query() and connect() so any error gets decorated with
+  // dbHost. We do NOT mutate the error's existing properties — only
+  // attach `dbHost` if not already set. The original error is
+  // re-thrown so the call site keeps the same stack and code.
+  const originalQuery = pool.query.bind(pool);
+  pool.query = async function decoratedQuery(...args) {
+    try {
+      return await originalQuery(...args);
+    } catch (err) {
+      if (err && typeof err === 'object' && !err.dbHost) {
+        try { err.dbHost = dbHost; } catch { /* frozen err */ }
+      }
+      throw err;
+    }
+  };
+  const originalConnect = pool.connect.bind(pool);
+  pool.connect = async function decoratedConnect(...args) {
+    try {
+      return await originalConnect(...args);
+    } catch (err) {
+      if (err && typeof err === 'object' && !err.dbHost) {
+        try { err.dbHost = dbHost; } catch { /* frozen err */ }
+      }
+      throw err;
+    }
+  };
+
   return pool;
 }
 
@@ -132,5 +205,7 @@ module.exports = {
   pingDatabase,
   closePool,
   describeDbError,
+  safeHostFromUrl,
+  isSupabaseDirectHost,
   RETRY_DELAYS_MS,
 };
