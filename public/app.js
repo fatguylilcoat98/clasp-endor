@@ -40,6 +40,25 @@
     adminRefresh:     document.getElementById('admin-refresh'),
     adminMeta:        document.getElementById('admin-meta'),
     adminTbody:       document.getElementById('admin-tbody'),
+
+    inspectorRefresh: document.getElementById('memory-inspector-refresh'),
+    inspectorMeta:    document.getElementById('memory-inspector-meta'),
+    inspectorTbody:   document.getElementById('memory-inspector-tbody'),
+
+    eventsRefresh:    document.getElementById('governance-events-refresh'),
+    eventsMeta:       document.getElementById('governance-events-meta'),
+    eventsTbody:      document.getElementById('governance-events-tbody'),
+
+    circleCard:       document.getElementById('circle-card'),
+    circleAddForm:    document.getElementById('circle-add-form'),
+    circleAddEmail:   document.getElementById('circle-add-email'),
+    circleAddFamily:  document.getElementById('circle-add-family-shared'),
+    circleAddSubmit:  document.getElementById('circle-add-submit'),
+    circleAddError:   document.getElementById('circle-add-error'),
+    circleAddOk:      document.getElementById('circle-add-ok'),
+    circleRefresh:    document.getElementById('circle-refresh'),
+    circleMeta:       document.getElementById('circle-meta'),
+    circleTbody:      document.getElementById('circle-tbody'),
   };
 
   function setText(node, text) { node.textContent = text; }
@@ -95,9 +114,14 @@
     if (isAdminRole(authResponse.userRole)) {
       el.adminCard.hidden = false;
       refreshAdmin();
+      refreshMemoryInspector();
+      refreshGovernanceEvents();
     } else {
       el.adminCard.hidden = true;
     }
+    // Circle management is available to every signed-in user, not
+    // just admins. Default-deny remains intact at the substrate.
+    refreshCircle();
     el.messageInput.focus();
   }
 
@@ -212,6 +236,9 @@
       appendKv(dl, 'memoriesStored', String(g.memoriesStored || 0));
       appendKv(dl, 'factsExtracted', String(g.factsExtracted || 0));
     }
+    if (g.visibilityLevel) {
+      appendKv(dl, 'visibilityLevel', String(g.visibilityLevel));
+    }
     details.appendChild(dl);
     return details;
   }
@@ -225,17 +252,23 @@
     dl.appendChild(dd);
   }
 
+  function readVisibilityHint() {
+    const checked = document.querySelector('input[name="visibility"]:checked');
+    return checked ? checked.value : 'private';
+  }
+
   async function onChatSubmit(event) {
     event.preventDefault();
     clearError(el.chatError);
     const message = el.messageInput.value.trim();
     if (!message) return;
+    const visibilityHint = readVisibilityHint();
     el.chatSubmit.disabled = true;
     el.loading.hidden = false;
     renderUserMessage(message);
     el.messageInput.value = '';
     try {
-      const r = await postJson('/api/chat', { message });
+      const r = await postJson('/api/chat', { message, visibilityHint });
       if (!r.ok) {
         if (r.status === 401) {
           // Session lapsed — kick back to login.
@@ -253,7 +286,7 @@
           intentType: null,
           memoryCount: null,
         });
-        if (!el.adminCard.hidden) refreshAdmin();
+        if (!el.adminCard.hidden) { refreshAdmin(); refreshMemoryInspector(); refreshGovernanceEvents(); }
         return;
       }
       const b = r.body;
@@ -268,8 +301,9 @@
         auditReason: b.auditReason,
         memoriesStored: b.memoriesStored,
         factsExtracted: b.factsExtracted,
+        visibilityLevel: b.visibilityLevel,
       });
-      if (!el.adminCard.hidden) refreshAdmin();
+      if (!el.adminCard.hidden) { refreshAdmin(); refreshMemoryInspector(); refreshGovernanceEvents(); }
     } catch (err) {
       showError(el.chatError, 'Network error. The companion did not respond.');
     } finally {
@@ -311,9 +345,207 @@
     return node;
   }
 
+  function badge(text, cls) {
+    const span = document.createElement('span');
+    span.className = 'inspector-badge ' + cls;
+    span.textContent = text;
+    return span;
+  }
+
+  async function refreshMemoryInspector() {
+    try {
+      const r = await getJson('/api/admin/memories');
+      if (!r.ok) {
+        el.inspectorMeta.textContent = 'Failed to load (' + r.status + ').';
+        return;
+      }
+      const memories = (r.body && r.body.memories) || [];
+      el.inspectorMeta.textContent = memories.length + ' rows (RLS-narrowed, includes superseded)';
+      el.inspectorTbody.innerHTML = '';
+      for (const m of memories) {
+        const tr = document.createElement('tr');
+        tr.appendChild(td(m.created_at ? new Date(m.created_at).toLocaleString() : ''));
+        tr.appendChild(td(m.owning_user_id ? m.owning_user_id.slice(0, 8) + '…' : ''));
+
+        const visTd = document.createElement('td');
+        if (m.visibility_level) {
+          visTd.appendChild(badge(m.visibility_level, 'badge-vis-' + m.visibility_level));
+        }
+        tr.appendChild(visTd);
+
+        const authTd = document.createElement('td');
+        if (m.authority_level) {
+          authTd.appendChild(badge(m.authority_level, 'badge-authority-' + m.authority_level));
+        }
+        authTd.appendChild(document.createElement('br'));
+        const provSmall = document.createElement('small');
+        provSmall.textContent = m.provenance || '';
+        provSmall.style.color = '#777';
+        authTd.appendChild(provSmall);
+        tr.appendChild(authTd);
+
+        const flagsTd = document.createElement('td');
+        const allFlags = Array.isArray(m.flags) ? m.flags.slice() : [];
+        if (m.redacted) allFlags.push('REDACTED');
+        if (m.memory_status && !allFlags.includes(m.memory_status)
+            && m.memory_status !== 'WORKING_ACTIVE' && m.memory_status !== 'VERIFIED') {
+          allFlags.unshift(m.memory_status);
+        }
+        if (allFlags.length === 0) {
+          const ok = document.createElement('small');
+          ok.textContent = m.memory_status || '';
+          ok.style.color = '#777';
+          flagsTd.appendChild(ok);
+        } else {
+          for (const f of allFlags) {
+            flagsTd.appendChild(badge(f, 'badge-flag-' + f));
+          }
+        }
+        tr.appendChild(flagsTd);
+
+        const whyTd = document.createElement('td');
+        whyTd.className = 'inspector-why';
+        whyTd.textContent = m.whyVisible || '';
+        tr.appendChild(whyTd);
+
+        const contentTd = document.createElement('td');
+        contentTd.className = 'content-cell';
+        if (m.redacted || m.content == null) {
+          contentTd.className += ' inspector-redacted';
+          contentTd.textContent = '[redacted — password_locked content not rendered]';
+        } else {
+          contentTd.textContent = String(m.content);
+        }
+        tr.appendChild(contentTd);
+        el.inspectorTbody.appendChild(tr);
+      }
+    } catch (err) {
+      el.inspectorMeta.textContent = 'Network error loading inspector.';
+    }
+  }
+
+  async function refreshGovernanceEvents() {
+    try {
+      const r = await getJson('/api/admin/governance-events');
+      if (!r.ok) {
+        el.eventsMeta.textContent = 'Failed to load (' + r.status + ').';
+        return;
+      }
+      const events = (r.body && r.body.events) || [];
+      el.eventsMeta.textContent = events.length + ' events (RLS-narrowed)';
+      el.eventsTbody.innerHTML = '';
+      for (const e of events) {
+        const tr = document.createElement('tr');
+        tr.appendChild(td(e.createdAt ? new Date(e.createdAt).toLocaleString() : ''));
+        const typeTd = document.createElement('td');
+        const typeSpan = document.createElement('span');
+        typeSpan.className = 'event-type-badge event-type-' + e.eventType;
+        typeSpan.textContent = e.eventType;
+        typeTd.appendChild(typeSpan);
+        tr.appendChild(typeTd);
+        const actorTd = document.createElement('td');
+        actorTd.textContent = (e.actorRole || '') + ' '
+          + (e.actorUserId ? e.actorUserId.slice(0, 8) + '…' : '');
+        tr.appendChild(actorTd);
+        tr.appendChild(td(e.targetUserId ? e.targetUserId.slice(0, 8) + '…' : ''));
+        tr.appendChild(td(e.memoryId ? e.memoryId.slice(0, 8) + '…' : ''));
+        const outcomeTd = document.createElement('td');
+        outcomeTd.textContent = e.outcome || '';
+        outcomeTd.className = 'outcome-' + (e.outcome || '');
+        tr.appendChild(outcomeTd);
+        tr.appendChild(td(e.reason || ''));
+        el.eventsTbody.appendChild(tr);
+      }
+    } catch (err) {
+      el.eventsMeta.textContent = 'Network error loading events.';
+    }
+  }
+
   async function onLogout() {
     try { await postJson('/api/logout', {}); } catch (e) { /* swallow */ }
     window.location.reload();
+  }
+
+  // ---------- Phase 3: circle contacts ----------
+
+  async function refreshCircle() {
+    try {
+      const r = await getJson('/api/circle/contacts');
+      if (!r.ok) {
+        el.circleMeta.textContent = 'Failed to load (' + r.status + ').';
+        return;
+      }
+      const contacts = (r.body && r.body.contacts) || [];
+      el.circleMeta.textContent = contacts.length + ' contact(s)';
+      el.circleTbody.innerHTML = '';
+      for (const c of contacts) {
+        const tr = document.createElement('tr');
+        tr.appendChild(td(c.contactUsername));
+        tr.appendChild(td(c.contactRole));
+        const hasFamily = c.visibilityLevels && c.visibilityLevels.includes('family_shared');
+        const grantTd = document.createElement('td');
+        grantTd.textContent = hasFamily ? 'granted' : 'denied';
+        grantTd.className = hasFamily ? 'vis-family_shared' : 'vis-private';
+        tr.appendChild(grantTd);
+        tr.appendChild(td(c.createdAt ? new Date(c.createdAt).toLocaleString() : ''));
+
+        const actionTd = document.createElement('td');
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'circle-action-button';
+        btn.textContent = hasFamily ? 'Revoke family_shared' : 'Grant family_shared';
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          try {
+            await postJson('/api/circle/contacts/scope', {
+              id: c.id,
+              visibilityLevels: hasFamily ? [] : ['family_shared'],
+            });
+            await refreshCircle();
+          } catch (err) {
+            // Best-effort; on failure leave the row alone and let the
+            // user retry. No silent state change.
+            btn.disabled = false;
+          }
+        });
+        actionTd.appendChild(btn);
+        tr.appendChild(actionTd);
+
+        el.circleTbody.appendChild(tr);
+      }
+    } catch (err) {
+      el.circleMeta.textContent = 'Network error loading circle.';
+    }
+  }
+
+  async function onCircleAddSubmit(event) {
+    event.preventDefault();
+    clearError(el.circleAddError);
+    el.circleAddOk.hidden = true;
+    const email = el.circleAddEmail.value.trim();
+    if (!email) {
+      showError(el.circleAddError, 'Email is required.');
+      return;
+    }
+    const visibilityLevels = el.circleAddFamily.checked ? ['family_shared'] : [];
+    el.circleAddSubmit.disabled = true;
+    try {
+      const r = await postJson('/api/circle/contacts', { email, visibilityLevels });
+      if (!r.ok) {
+        showError(el.circleAddError,
+          (r.body && r.body.error) || ('Add failed (' + r.status + ').'));
+        return;
+      }
+      el.circleAddEmail.value = '';
+      el.circleAddFamily.checked = false;
+      el.circleAddOk.textContent = 'Contact added.';
+      el.circleAddOk.hidden = false;
+      await refreshCircle();
+    } catch (err) {
+      showError(el.circleAddError, 'Network error.');
+    } finally {
+      el.circleAddSubmit.disabled = false;
+    }
   }
 
   // Wire events
@@ -323,6 +555,10 @@
   el.showLogin.addEventListener('click', showLoginCard);
   el.chatForm.addEventListener('submit', onChatSubmit);
   el.adminRefresh.addEventListener('click', refreshAdmin);
+  if (el.inspectorRefresh) el.inspectorRefresh.addEventListener('click', refreshMemoryInspector);
+  if (el.eventsRefresh) el.eventsRefresh.addEventListener('click', refreshGovernanceEvents);
+  if (el.circleRefresh) el.circleRefresh.addEventListener('click', refreshCircle);
+  if (el.circleAddForm) el.circleAddForm.addEventListener('submit', onCircleAddSubmit);
   el.logoutButton.addEventListener('click', onLogout);
   el.messageInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {

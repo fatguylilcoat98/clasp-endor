@@ -12,7 +12,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { insertAuditEvent, EVENT_TYPES } = require('../../src/memory/audit');
-const { insertPrivateMemory, MAX_CONTENT_LENGTH } = require('../../src/memory/repository');
+const { insertPrivateMemory, insertSharedMemory, MAX_CONTENT_LENGTH } = require('../../src/memory/repository');
 
 const PILOT = '11111111-1111-1111-1111-111111111111';
 const USER = 'aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa';
@@ -161,5 +161,48 @@ test('insertPrivateMemory: rejects empty / non-string content', async () => {
   await assert.rejects(
     () => insertPrivateMemory(client, sessionCtx, { content: 123, provenance: 'USER_STATED' }),
     /content must be a non-empty string/
+  );
+});
+
+// ---- Phase 2: insertSharedMemory (family_shared tier) ----
+
+test('insertPrivateMemory: INSERT statement carries visibility_level=$5 with value "private"', async () => {
+  const client = makeFakeClient();
+  await insertPrivateMemory(client, sessionCtx, { content: 'hi', provenance: 'USER_STATED' });
+  const insertQ = client.queries.find((q) => /INSERT\s+INTO\s+memory_store/i.test(q.text));
+  assert.ok(insertQ, 'an INSERT must have been issued');
+  // params[4] = visibility_level (1-indexed param $5)
+  assert.equal(insertQ.params[4], 'private');
+});
+
+test('insertSharedMemory: INSERT statement carries visibility_level "family_shared"', async () => {
+  const client = makeFakeClient();
+  await insertSharedMemory(client, sessionCtx, { content: 'family note', provenance: 'USER_STATED' });
+  const insertQ = client.queries.find((q) => /INSERT\s+INTO\s+memory_store/i.test(q.text));
+  assert.ok(insertQ);
+  assert.equal(insertQ.params[4], 'family_shared');
+});
+
+test('insertSharedMemory: still pairs with a single audit row in the same call sequence', async () => {
+  const client = makeFakeClient();
+  await insertSharedMemory(client, sessionCtx, { content: 'family note', provenance: 'USER_STATED' });
+  const inserts = client.queries.filter((q) => /INSERT\s+INTO/i.test(q.text));
+  // One memory_store INSERT + one governance_audit_log INSERT
+  assert.equal(inserts.length, 2);
+});
+
+test('insertSharedMemory: same validation as insertPrivateMemory — content, provenance, length', async () => {
+  const client = makeFakeClient();
+  await assert.rejects(
+    () => insertSharedMemory(client, sessionCtx, { content: '', provenance: 'USER_STATED' }),
+    /content must be a non-empty string/
+  );
+  await assert.rejects(
+    () => insertSharedMemory(client, sessionCtx, { content: 'ok', provenance: 'GOSSIP' }),
+    /provenance must be one of/
+  );
+  await assert.rejects(
+    () => insertSharedMemory(client, sessionCtx, { content: 'x'.repeat(MAX_CONTENT_LENGTH + 1), provenance: 'USER_STATED' }),
+    /content exceeds maximum length/
   );
 });

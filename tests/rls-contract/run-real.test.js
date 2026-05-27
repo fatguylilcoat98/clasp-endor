@@ -1691,3 +1691,228 @@ test('real-schema: governance_execution_verifications append-only — DELETE rai
     /append.only/i
   );
 });
+
+// =====================================================================
+// Phase 2 — shared memory writes
+//
+// withContext() always ROLLBACKs at the end of the block, so we prove
+// writes via RETURNING counts INSIDE the same withContext block, and
+// prove RLS-narrowed reads by seeding rows as the bootstrap superuser
+// (which BYPASSes RLS) and then opening the read withContext for the
+// role under test.
+// =====================================================================
+
+test('real-schema: memory_store INSERT (family_shared) — lylo_app/senior can write it (succeeds, RETURNING row)', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    const r = await client.query(
+      'INSERT INTO memory_store '
+        + '(pilot_instance_id, owning_user_id, content, provenance, visibility_level, admissibility_state) '
+        + "VALUES ($1, $2, 'phase2-write-probe', 'USER_STATED', 'family_shared', 'admissible') "
+        + 'RETURNING id, visibility_level',
+      [PILOT_A, SENIOR_A]
+    );
+    assert.equal(r.rows.length, 1, 'family_shared INSERT must succeed under existing memory_store INSERT policy');
+    assert.equal(r.rows[0].visibility_level, 'family_shared');
+  });
+});
+
+test('real-schema: memory_store (family_shared, seeded) — family-A with grant sees it; caregiver-A without grant does not', async () => {
+  const c = await setup();
+  // Seed a new family_shared row as superuser so it persists past
+  // withContext rollbacks.
+  await c.query(
+    'INSERT INTO memory_store '
+      + '(pilot_instance_id, owning_user_id, content, provenance, visibility_level, admissibility_state) '
+      + "VALUES ($1, $2, 'phase2-seeded-family-shared', 'USER_STATED', 'family_shared', 'admissible')",
+    [PILOT_A, SENIOR_A]
+  );
+
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    const r = await client.query(
+      "SELECT id FROM memory_store WHERE content = 'phase2-seeded-family-shared'"
+    );
+    assert.equal(r.rows.length, 1, 'family contact with family_shared grant must see the row');
+  });
+
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: CAREGIVER_A, userRole: 'caregiver',
+  }, async (client) => {
+    const r = await client.query(
+      "SELECT id FROM memory_store WHERE content = 'phase2-seeded-family-shared'"
+    );
+    assert.equal(r.rows.length, 0, 'caregiver with empty visibility_levels must not see family_shared');
+  });
+});
+
+test('real-schema: memory_store (family_shared, seeded in pilot A) — senior-B in pilot B sees nothing (cross-pilot)', async () => {
+  const c = await setup();
+  await c.query(
+    'INSERT INTO memory_store '
+      + '(pilot_instance_id, owning_user_id, content, provenance, visibility_level, admissibility_state) '
+      + "VALUES ($1, $2, 'phase2-cross-pilot-probe', 'USER_STATED', 'family_shared', 'admissible')",
+    [PILOT_A, SENIOR_A]
+  );
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_B, user: SENIOR_B, userRole: 'senior',
+  }, async (client) => {
+    const r = await client.query(
+      "SELECT id FROM memory_store WHERE content = 'phase2-cross-pilot-probe'"
+    );
+    assert.equal(r.rows.length, 0, 'cross-pilot isolation holds even with family_shared tier');
+  });
+});
+
+// =====================================================================
+// Phase 3 — circle contacts management (migration 019 adds INSERT/UPDATE
+// grants + policies)
+// =====================================================================
+
+// A user fixture used only for these tests. Pre-seeded as superuser so
+// it exists across all Phase 3 tests regardless of withContext rollbacks.
+const NEW_FAMILY_A = 'aaaaaaaa-bbbb-1111-1111-aaaaaaaaaaaa';
+
+async function seedNewFamilyUser(c) {
+  await c.query(
+    'INSERT INTO users (id, pilot_instance_id, username, role) '
+      + 'VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING',
+    [NEW_FAMILY_A, PILOT_A, 'new-family@test.example', 'family']
+  );
+}
+
+test('real-schema: circle_contacts INSERT — senior can add a row for themselves (RETURNING proves the policy permits)', async () => {
+  const c = await setup();
+  await seedNewFamilyUser(c);
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    const r = await client.query(
+      'INSERT INTO circle_contacts '
+        + '(pilot_instance_id, senior_user_id, contact_user_id, permission_scope) '
+        + "VALUES ($1, $2, $3, '{\"visibility_levels\":[]}'::jsonb) "
+        + 'RETURNING id',
+      [PILOT_A, SENIOR_A, NEW_FAMILY_A]
+    );
+    assert.equal(r.rows.length, 1, 'INSERT with senior_user_id = app.user_id must be permitted by the new policy');
+  });
+});
+
+test('real-schema: circle_contacts INSERT — caller cannot claim a senior_user_id that is not themselves (WITH CHECK blocks it)', async () => {
+  const c = await setup();
+  await seedNewFamilyUser(c);
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    await assert.rejects(
+      () => client.query(
+        'INSERT INTO circle_contacts '
+          + '(pilot_instance_id, senior_user_id, contact_user_id, permission_scope) '
+          + "VALUES ($1, $2, $3, '{\"visibility_levels\":[\"family_shared\"]}'::jsonb)",
+        [PILOT_A, SENIOR_A, NEW_FAMILY_A]
+      ),
+      /row.level security|new row violates row.level/i,
+      'WITH CHECK must reject INSERT where senior_user_id != app.user_id'
+    );
+  });
+});
+
+test('real-schema: circle_contacts UPDATE — senior can update their own row (RETURNING proves the policy permits)', async () => {
+  const c = await setup();
+  // Update the fixture row: SENIOR_A -> FAMILY_A with family_shared.
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    const r = await client.query(
+      "UPDATE circle_contacts SET permission_scope = '{\"visibility_levels\":[]}'::jsonb "
+        + 'WHERE pilot_instance_id = $1 AND senior_user_id = $2 AND contact_user_id = $3 '
+        + 'RETURNING id',
+      [PILOT_A, SENIOR_A, FAMILY_A]
+    );
+    assert.equal(r.rows.length, 1, 'senior must be able to update their own grant row');
+  });
+});
+
+test('real-schema: circle_contacts UPDATE — a contact cannot rewrite the senior\'s grant row (zero rows updated)', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    // FAMILY_A targets SENIOR_A's grant row. The UPDATE policy USING
+    // clause requires senior_user_id = app.user_id; FAMILY_A is the
+    // contact, not the senior, so RLS narrows the matched row set to
+    // zero. RETURNING confirms.
+    const r = await client.query(
+      "UPDATE circle_contacts SET permission_scope = '{\"visibility_levels\":[]}'::jsonb "
+        + 'WHERE senior_user_id = $1 AND contact_user_id = $2 '
+        + 'RETURNING id',
+      [SENIOR_A, FAMILY_A]
+    );
+    assert.equal(r.rows.length, 0, 'contact must not be able to rewrite the senior\'s grant row');
+  });
+});
+
+test('real-schema: circle_contacts (empty scope, seeded) — contact sees no family_shared rows from that senior (default-deny)', async () => {
+  const c = await setup();
+  await seedNewFamilyUser(c);
+  // Seed circle row + a family_shared memory as superuser so both
+  // persist past withContext rollbacks.
+  await c.query(
+    "DELETE FROM circle_contacts WHERE senior_user_id = $1 AND contact_user_id = $2",
+    [SENIOR_A, NEW_FAMILY_A]
+  );
+  await c.query(
+    'INSERT INTO circle_contacts '
+      + '(pilot_instance_id, senior_user_id, contact_user_id, permission_scope) '
+      + "VALUES ($1, $2, $3, '{\"visibility_levels\":[]}'::jsonb)",
+    [PILOT_A, SENIOR_A, NEW_FAMILY_A]
+  );
+  await c.query(
+    'INSERT INTO memory_store '
+      + '(pilot_instance_id, owning_user_id, content, provenance, visibility_level, admissibility_state) '
+      + "VALUES ($1, $2, 'phase3-default-deny-probe', 'USER_STATED', 'family_shared', 'admissible')",
+    [PILOT_A, SENIOR_A]
+  );
+
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: NEW_FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    const r = await client.query(
+      "SELECT id FROM memory_store WHERE content = 'phase3-default-deny-probe'"
+    );
+    assert.equal(r.rows.length, 0, 'default-deny: empty visibility_levels grants no visibility');
+  });
+});
+
+test('real-schema: circle_contacts (family_shared scope, seeded) — contact sees the senior\'s family_shared rows', async () => {
+  const c = await setup();
+  await seedNewFamilyUser(c);
+  await c.query(
+    "DELETE FROM circle_contacts WHERE senior_user_id = $1 AND contact_user_id = $2",
+    [SENIOR_A, NEW_FAMILY_A]
+  );
+  await c.query(
+    'INSERT INTO circle_contacts '
+      + '(pilot_instance_id, senior_user_id, contact_user_id, permission_scope) '
+      + "VALUES ($1, $2, $3, '{\"visibility_levels\":[\"family_shared\"]}'::jsonb)",
+    [PILOT_A, SENIOR_A, NEW_FAMILY_A]
+  );
+  await c.query(
+    'INSERT INTO memory_store '
+      + '(pilot_instance_id, owning_user_id, content, provenance, visibility_level, admissibility_state) '
+      + "VALUES ($1, $2, 'phase3-grant-probe', 'USER_STATED', 'family_shared', 'admissible')",
+    [PILOT_A, SENIOR_A]
+  );
+
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: NEW_FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    const r = await client.query(
+      "SELECT id FROM memory_store WHERE content = 'phase3-grant-probe'"
+    );
+    assert.equal(r.rows.length, 1, 'family_shared grant opens visibility of the senior\'s family_shared rows');
+  });
+});

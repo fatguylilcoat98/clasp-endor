@@ -165,6 +165,16 @@ jobs:
           node-version: '20'
       - run: node scripts/ci/check-review-boundary.js
 
+  circle-boundary-guard:
+    name: Circle-contacts boundary guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: node scripts/ci/check-circle-boundary.js
+
   gauntlet-boundary-guard:
     name: Gauntlet boundary guard
     runs-on: ubuntu-latest
@@ -185,7 +195,7 @@ jobs:
           node-version: '20'
       - name: Install dependencies
         run: npm ci
-      - run: node --test tests/runtime/*.test.js tests/memory/*.test.js tests/companion/*.test.js tests/conversation/*.test.js tests/governance/*.test.js tests/actors/*.test.js tests/review/*.test.js
+      - run: node --test tests/runtime/*.test.js tests/memory/*.test.js tests/companion/*.test.js tests/conversation/*.test.js tests/governance/*.test.js tests/actors/*.test.js tests/review/*.test.js tests/circle/*.test.js
 
   web-tests:
     name: Web unit tests

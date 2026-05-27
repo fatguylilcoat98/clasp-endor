@@ -57,6 +57,12 @@ function buildStubWiring(textOrError, opts) {
   const o = opts || {};
   const auditFields = o.audit || { verdict: 'PASS', details: 'audit-disabled' };
   const memoryFields = o.memory || { stored: 0, extracted: 0 };
+  const inspectorRows = Array.isArray(o.inspectorRows) ? o.inspectorRows : [];
+  const inspectorCalls = [];
+  const eventsCalls = [];
+  const circleListCalls = [];
+  const circleAddCalls = [];
+  const circleScopeCalls = [];
   const conversationRuntime = {
     respond: async (input) => {
       assert.equal(input.pilotInstanceId, PILOT_UUID);
@@ -92,7 +98,46 @@ function buildStubWiring(textOrError, opts) {
         executed: result.outcome === 'executed',
       };
     },
+    listMemoriesForInspector: async (params) => {
+      inspectorCalls.push(params);
+      if (o.inspectorError) throw o.inspectorError;
+      return inspectorRows;
+    },
+    listGovernanceEvents: async (params) => {
+      eventsCalls.push(params);
+      if (o.eventsError) throw o.eventsError;
+      return Array.isArray(o.events) ? o.events : [];
+    },
+    // Phase 3: circle CRUD stubs. Test can preload contacts via
+    // opts.circleContacts; addCircleContact returns a synthetic id;
+    // setCircleContactPermissions just echoes the call. Tests that
+    // want richer behavior can swap in a custom wiring object.
+    listCircleContacts: async (params) => {
+      circleListCalls.push(params);
+      if (o.circleError) throw o.circleError;
+      return Array.isArray(o.circleContacts) ? o.circleContacts : [];
+    },
+    addCircleContact: async (params) => {
+      circleAddCalls.push(params);
+      if (o.circleAddError) throw o.circleAddError;
+      return {
+        id: '00000000-aaaa-aaaa-aaaa-000000000099',
+        contactUserId: '00000000-bbbb-bbbb-bbbb-000000000099',
+        visibilityLevels: Array.isArray(params.visibilityLevels) ? params.visibilityLevels : [],
+        createdAt: new Date().toISOString(),
+      };
+    },
+    setCircleContactPermissions: async (params) => {
+      circleScopeCalls.push(params);
+      if (o.circleScopeError) throw o.circleScopeError;
+      return { id: params.id, visibilityLevels: params.visibilityLevels };
+    },
     close: async () => {},
+    _inspectorCalls: inspectorCalls,
+    _eventsCalls: eventsCalls,
+    _circleListCalls: circleListCalls,
+    _circleAddCalls: circleAddCalls,
+    _circleScopeCalls: circleScopeCalls,
   };
 }
 
@@ -172,7 +217,7 @@ function startServer(stubWiringText, opts) {
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address();
-      resolve({ server, port, sessionCodec, recent, lines, supabaseAuth, identity });
+      resolve({ server, port, sessionCodec, recent, lines, supabaseAuth, identity, wiring });
     });
   });
 }
@@ -521,6 +566,142 @@ test('chat without session → 401', async () => {
   } finally { ctx.server.close(); }
 });
 
+test('chat with visibilityHint=family_shared: wiring receives the hint, response echoes it', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'chris@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_CHRIS, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_CHRIS, email: 'chris@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  // Custom wiring that records the visibilityHint param.
+  const calls = [];
+  const wiring = {
+    handleChat: async (params) => {
+      calls.push(params);
+      return {
+        outcome: 'executed', decision: 'execute', intentType: 'response.deliver',
+        reason: null, policyRef: null, response: 'ok', memoryCount: 0,
+        auditVerdict: 'N/A', auditDetails: 'no-audit', auditReason: null,
+        memoriesStored: 0, factsExtracted: 0, visibilityLevel: params.visibilityHint,
+        executed: true,
+      };
+    },
+    listMemoriesForInspector: async () => [],
+    listGovernanceEvents: async () => [],
+    listCircleContacts: async () => [],
+    addCircleContact: async () => ({ id: 'x', contactUserId: 'y', visibilityLevels: [], createdAt: '' }),
+    setCircleContactPermissions: async (p) => ({ id: p.id, visibilityLevels: p.visibilityLevels }),
+    close: async () => {},
+  };
+  const sessionCodec = createSessionCodec({ secret: SECRET });
+  const recent = createRecentBuffer({ capacity: 5 });
+  const { log } = captureLog();
+  const identity = buildStubIdentity();
+  const server = createTestDoorServer({
+    repoRoot: REPO_ROOT, pilotInstanceId: PILOT_UUID, sessionCodec, wiring, recent,
+    supabaseAuth, identity, supabaseJwtSecret: JWT_SECRET,
+    expectedJwtIssuer: 'https://test.supabase.co/auth/v1',
+    log, secureCookie: false,
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address();
+  try {
+    const login = await req(port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const cookie = cookieFromRes(login);
+    const r = await req(port, 'POST', '/api/chat', {
+      headers: { Cookie: cookie },
+      body: { message: 'hi', visibilityHint: 'family_shared' },
+    });
+    assert.equal(r.statusCode, 200);
+    assert.equal(r.body.visibilityLevel, 'family_shared');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].visibilityHint, 'family_shared');
+  } finally { server.close(); }
+});
+
+test('chat with no visibilityHint: defaults to "private"', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'chris@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_CHRIS, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_CHRIS, email: 'chris@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const calls = [];
+  const wiring = {
+    handleChat: async (params) => {
+      calls.push(params);
+      return {
+        outcome: 'executed', decision: 'execute', intentType: 'response.deliver',
+        reason: null, policyRef: null, response: 'ok', memoryCount: 0,
+        auditVerdict: 'N/A', auditDetails: 'no-audit', auditReason: null,
+        memoriesStored: 0, factsExtracted: 0, visibilityLevel: 'private',
+        executed: true,
+      };
+    },
+    listMemoriesForInspector: async () => [],
+    listGovernanceEvents: async () => [],
+    listCircleContacts: async () => [],
+    addCircleContact: async () => ({ id: 'x', contactUserId: 'y', visibilityLevels: [], createdAt: '' }),
+    setCircleContactPermissions: async (p) => ({ id: p.id, visibilityLevels: p.visibilityLevels }),
+    close: async () => {},
+  };
+  const sessionCodec = createSessionCodec({ secret: SECRET });
+  const recent = createRecentBuffer({ capacity: 5 });
+  const { log } = captureLog();
+  const identity = buildStubIdentity();
+  const server = createTestDoorServer({
+    repoRoot: REPO_ROOT, pilotInstanceId: PILOT_UUID, sessionCodec, wiring, recent,
+    supabaseAuth, identity, supabaseJwtSecret: JWT_SECRET,
+    expectedJwtIssuer: 'https://test.supabase.co/auth/v1',
+    log, secureCookie: false,
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address();
+  try {
+    const login = await req(port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(port, 'POST', '/api/chat', {
+      headers: { Cookie: cookieFromRes(login) },
+      body: { message: 'hi' },
+    });
+    assert.equal(r.statusCode, 200);
+    assert.equal(calls[0].visibilityHint, 'private');
+  } finally { server.close(); }
+});
+
+test('chat with visibilityHint=password_locked: 400, wiring never invoked', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'chris@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_CHRIS, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_CHRIS, email: 'chris@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const ctx = await startServer('hi', { supabaseAuth });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'POST', '/api/chat', {
+      headers: { Cookie: cookieFromRes(login) },
+      body: { message: 'hi', visibilityHint: 'password_locked' },
+    });
+    assert.equal(r.statusCode, 400, 'password_locked must be rejected here');
+    assert.match(r.body.error, /visibilityHint/);
+  } finally { ctx.server.close(); }
+});
+
 test('chat after login: response carries memoryCount, decision, audit fields', async () => {
   const supabaseAuth = buildStubSupabaseAuth({
     loginResults: {
@@ -593,6 +774,435 @@ test('admin-recent: admin role required', async () => {
       headers: { Cookie: cookieFromRes(adminLogin) },
     });
     assert.equal(r2.statusCode, 200, 'admin role → 200');
+  } finally { ctx.server.close(); }
+});
+
+// =================================================================
+// Memory inspector (Phase 1) — admin-only, RLS-narrowed
+// =================================================================
+
+test('admin-memories: no session → 401', async () => {
+  const ctx = await startServer('hi');
+  try {
+    const r = await req(ctx.port, 'GET', '/api/admin/memories');
+    assert.equal(r.statusCode, 401);
+  } finally { ctx.server.close(); }
+});
+
+test('admin-memories: senior role → 403, no wiring call', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'chris@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_CHRIS, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_CHRIS, email: 'chris@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const ctx = await startServer('hi', { supabaseAuth });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'GET', '/api/admin/memories', {
+      headers: { Cookie: cookieFromRes(login) },
+    });
+    assert.equal(r.statusCode, 403, 'senior must not access inspector');
+    assert.equal(ctx.wiring._inspectorCalls.length, 0, 'wiring must not be invoked for forbidden role');
+  } finally { ctx.server.close(); }
+});
+
+test('admin-memories: admin role → 200, returns rows the wiring produced', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'admin@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_ADMIN, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_ADMIN, email: 'admin@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const inspectorRows = [
+    {
+      id: '00000000-0000-0000-0000-000000000001',
+      content: 'admin sees their own memory',
+      visibility_level: 'private',
+      memory_status: 'WORKING_ACTIVE',
+      authority_level: 'EXTRACTED',
+      provenance: 'USER_STATED',
+      admissibility_state: 'admissible',
+      owning_user_id: 'dddddddd-0000-0000-0000-000000000001',
+      active: true,
+      created_at: new Date('2024-01-01T00:00:00Z').toISOString(),
+      updated_at: new Date('2024-01-01T00:00:00Z').toISOString(),
+    },
+  ];
+  const ctx = await startServer('hi', { supabaseAuth, inspectorRows });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'admin@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'GET', '/api/admin/memories', {
+      headers: { Cookie: cookieFromRes(login) },
+    });
+    assert.equal(r.statusCode, 200);
+    assert.equal(r.body.count, 1);
+    assert.equal(r.body.memories.length, 1);
+    assert.equal(r.body.memories[0].visibility_level, 'private');
+    assert.equal(r.body.memories[0].authority_level, 'EXTRACTED');
+    // Wiring was called exactly once, with the admin's resolved
+    // session userId — proving the inspector does not bypass the
+    // session ctx (the seam where RLS would be bypassed if we did).
+    assert.equal(ctx.wiring._inspectorCalls.length, 1);
+    const call = ctx.wiring._inspectorCalls[0];
+    assert.equal(call.pilotInstanceId, PILOT_UUID);
+    assert.equal(call.userRole, 'admin');
+    assert.match(call.userId, /^[0-9a-f-]{36}$/);
+  } finally { ctx.server.close(); }
+});
+
+test('admin-memories: surface does not bypass RLS — passes the SESSION user, not a privileged uuid', async () => {
+  // A regression guard: the inspector must call the wiring with the
+  // currently-logged-in admin's userId, not a hardcoded "see all"
+  // value. Distinct admins → distinct userIds passed to wiring.
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'admin@chris.test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_CHRIS, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_CHRIS, email: 'admin@chris.test.example', emailConfirmed: true,
+      },
+      'admin@jill.test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_JILL, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_JILL, email: 'admin@jill.test.example', emailConfirmed: true,
+      },
+    },
+  });
+  // Both emails start with 'admin@' → buildStubIdentity gives both
+  // userRole='admin'.
+  const ctx = await startServer('hi', { supabaseAuth, inspectorRows: [] });
+  try {
+    const l1 = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'admin@chris.test.example', password: 'hunter2hunter2' },
+    });
+    const l2 = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'admin@jill.test.example', password: 'hunter2hunter2' },
+    });
+    await req(ctx.port, 'GET', '/api/admin/memories', { headers: { Cookie: cookieFromRes(l1) } });
+    await req(ctx.port, 'GET', '/api/admin/memories', { headers: { Cookie: cookieFromRes(l2) } });
+    assert.equal(ctx.wiring._inspectorCalls.length, 2);
+    assert.notEqual(
+      ctx.wiring._inspectorCalls[0].userId,
+      ctx.wiring._inspectorCalls[1].userId,
+      'distinct admin sessions must produce distinct userIds passed to wiring'
+    );
+  } finally { ctx.server.close(); }
+});
+
+test('admin-memories: wiring failure → 502 with coarse error class', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'admin@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_ADMIN, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_ADMIN, email: 'admin@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const boom = new Error('pg connection refused');
+  boom.code = 'ECONNREFUSED';
+  const ctx = await startServer('hi', { supabaseAuth, inspectorError: boom });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'admin@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'GET', '/api/admin/memories', {
+      headers: { Cookie: cookieFromRes(login) },
+    });
+    assert.equal(r.statusCode, 502);
+    assert.equal(r.body.errorClass, 'ECONNREFUSED');
+    // The raw error message must NOT be echoed.
+    assert.doesNotMatch(JSON.stringify(r.body), /connection refused/i);
+  } finally { ctx.server.close(); }
+});
+
+// =================================================================
+// Governance events panel — admin-only, RLS-narrowed
+// =================================================================
+
+test('admin-governance-events: no session → 401', async () => {
+  const ctx = await startServer('hi');
+  try {
+    const r = await req(ctx.port, 'GET', '/api/admin/governance-events');
+    assert.equal(r.statusCode, 401);
+  } finally { ctx.server.close(); }
+});
+
+test('admin-governance-events: senior role → 403, wiring not invoked', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'chris@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_CHRIS, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_CHRIS, email: 'chris@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const ctx = await startServer('hi', { supabaseAuth });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'GET', '/api/admin/governance-events', {
+      headers: { Cookie: cookieFromRes(login) },
+    });
+    assert.equal(r.statusCode, 403);
+    assert.equal(ctx.wiring._eventsCalls.length, 0);
+  } finally { ctx.server.close(); }
+});
+
+test('admin-governance-events: admin → 200, returns wiring rows; session userId is passed through', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'admin@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_ADMIN, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_ADMIN, email: 'admin@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const events = [
+    {
+      id: '00000000-0000-0000-0000-000000000aaa',
+      memoryId: '00000000-0000-0000-0000-000000000001',
+      targetUserId: 'dddddddd-0000-0000-0000-000000000001',
+      eventType: 'memory.updated',
+      actorUserId: 'dddddddd-0000-0000-0000-000000000001',
+      actorRole: 'senior',
+      oldVisibility: null,
+      newVisibility: null,
+      reason: 'USER_CORRECTED',
+      outcome: 'allowed',
+      createdAt: new Date('2024-01-01T00:00:00Z').toISOString(),
+    },
+  ];
+  const ctx = await startServer('hi', { supabaseAuth, events });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'admin@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'GET', '/api/admin/governance-events', {
+      headers: { Cookie: cookieFromRes(login) },
+    });
+    assert.equal(r.statusCode, 200);
+    assert.equal(r.body.count, 1);
+    assert.equal(r.body.events[0].eventType, 'memory.updated');
+    assert.equal(r.body.events[0].reason, 'USER_CORRECTED');
+    assert.equal(ctx.wiring._eventsCalls.length, 1);
+    assert.equal(ctx.wiring._eventsCalls[0].userRole, 'admin');
+  } finally { ctx.server.close(); }
+});
+
+test('admin-governance-events: wiring failure → 502 with coarse error class', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'admin@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_ADMIN, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_ADMIN, email: 'admin@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const boom = new Error('connection refused — should not echo');
+  boom.code = 'ECONNREFUSED';
+  const ctx = await startServer('hi', { supabaseAuth, eventsError: boom });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'admin@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'GET', '/api/admin/governance-events', {
+      headers: { Cookie: cookieFromRes(login) },
+    });
+    assert.equal(r.statusCode, 502);
+    assert.equal(r.body.errorClass, 'ECONNREFUSED');
+    assert.doesNotMatch(JSON.stringify(r.body), /connection refused/i);
+  } finally { ctx.server.close(); }
+});
+
+// =================================================================
+// Circle contacts (Phase 3) — list / add / set scope
+// =================================================================
+
+test('circle list: no session → 401', async () => {
+  const ctx = await startServer('hi');
+  try {
+    const r = await req(ctx.port, 'GET', '/api/circle/contacts');
+    assert.equal(r.statusCode, 401);
+  } finally { ctx.server.close(); }
+});
+
+test('circle list: returns the wiring rows for the logged-in user', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'chris@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_CHRIS, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_CHRIS, email: 'chris@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const circleContacts = [
+    {
+      id: '00000000-aaaa-aaaa-aaaa-000000000001',
+      contactUserId: '00000000-bbbb-bbbb-bbbb-000000000001',
+      contactUsername: 'jill@test.example',
+      contactRole: 'family',
+      visibilityLevels: ['family_shared'],
+      createdAt: new Date('2024-02-01T00:00:00Z').toISOString(),
+    },
+  ];
+  const ctx = await startServer('hi', { supabaseAuth, circleContacts });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'GET', '/api/circle/contacts', {
+      headers: { Cookie: cookieFromRes(login) },
+    });
+    assert.equal(r.statusCode, 200);
+    assert.equal(r.body.count, 1);
+    assert.equal(r.body.contacts[0].contactUsername, 'jill@test.example');
+    assert.deepEqual(r.body.contacts[0].visibilityLevels, ['family_shared']);
+    // Wiring was called with the session's userId — not a hardcoded
+    // identity. Same isolation invariant as the inspector.
+    assert.equal(ctx.wiring._circleListCalls.length, 1);
+    assert.equal(ctx.wiring._circleListCalls[0].pilotInstanceId, PILOT_UUID);
+  } finally { ctx.server.close(); }
+});
+
+test('circle add: empty email → 400, wiring not invoked', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'chris@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_CHRIS, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_CHRIS, email: 'chris@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const ctx = await startServer('hi', { supabaseAuth });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'POST', '/api/circle/contacts', {
+      headers: { Cookie: cookieFromRes(login) },
+      body: { email: '   ', visibilityLevels: ['family_shared'] },
+    });
+    assert.equal(r.statusCode, 400);
+    assert.equal(ctx.wiring._circleAddCalls.length, 0);
+  } finally { ctx.server.close(); }
+});
+
+test('circle add: visibilityLevels filters out non-allowed tiers (e.g. password_locked)', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'chris@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_CHRIS, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_CHRIS, email: 'chris@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const ctx = await startServer('hi', { supabaseAuth });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'POST', '/api/circle/contacts', {
+      headers: { Cookie: cookieFromRes(login) },
+      body: { email: 'jill@test.example', visibilityLevels: ['password_locked', 'family_shared', 'nonsense'] },
+    });
+    assert.equal(r.statusCode, 200);
+    assert.equal(ctx.wiring._circleAddCalls.length, 1);
+    // The HTTP edge sanitizes — only family_shared survives. The
+    // repository would reject any other tier downstream too, but the
+    // edge filter keeps malformed JSON from reaching the DB at all.
+    assert.deepEqual(ctx.wiring._circleAddCalls[0].visibilityLevels, ['family_shared']);
+  } finally { ctx.server.close(); }
+});
+
+test('circle add: unknown email → 404 (wiring threw not_found)', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'chris@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_CHRIS, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_CHRIS, email: 'chris@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const notFound = new Error('no user with that email in your pilot');
+  notFound.userClass = 'not_found';
+  const ctx = await startServer('hi', { supabaseAuth, circleAddError: notFound });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'POST', '/api/circle/contacts', {
+      headers: { Cookie: cookieFromRes(login) },
+      body: { email: 'ghost@nowhere.test', visibilityLevels: ['family_shared'] },
+    });
+    assert.equal(r.statusCode, 404);
+  } finally { ctx.server.close(); }
+});
+
+test('circle set-scope: empty visibilityLevels (soft revoke) is accepted', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'chris@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_CHRIS, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_CHRIS, email: 'chris@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const ctx = await startServer('hi', { supabaseAuth });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'POST', '/api/circle/contacts/scope', {
+      headers: { Cookie: cookieFromRes(login) },
+      body: { id: '00000000-aaaa-aaaa-aaaa-000000000001', visibilityLevels: [] },
+    });
+    assert.equal(r.statusCode, 200);
+    assert.equal(ctx.wiring._circleScopeCalls.length, 1);
+    assert.deepEqual(ctx.wiring._circleScopeCalls[0].visibilityLevels, []);
+  } finally { ctx.server.close(); }
+});
+
+test('circle set-scope: missing id → 400', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'chris@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_CHRIS, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_CHRIS, email: 'chris@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const ctx = await startServer('hi', { supabaseAuth });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'POST', '/api/circle/contacts/scope', {
+      headers: { Cookie: cookieFromRes(login) },
+      body: { visibilityLevels: ['family_shared'] },
+    });
+    assert.equal(r.statusCode, 400);
   } finally { ctx.server.close(); }
 });
 

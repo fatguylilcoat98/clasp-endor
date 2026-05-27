@@ -139,6 +139,28 @@
             maxlength="8000"
             placeholder="Say something to the companion…"
           ></textarea>
+
+          <fieldset id="visibility-fieldset">
+            <legend>Save extracted memories as</legend>
+            <label class="role-option">
+              <input
+                type="radio"
+                name="visibility"
+                value="private"
+                checked
+              />
+              Private (only you)
+            </label>
+            <label class="role-option">
+              <input
+                type="radio"
+                name="visibility"
+                value="family_shared"
+              />
+              Shared with circle (family contacts)
+            </label>
+          </fieldset>
+
           <button id="chat-submit" type="submit">Send</button>
         </form>
 
@@ -163,6 +185,120 @@
                 </tr>
               </thead>
               <tbody id="admin-tbody"></tbody>
+            </table>
+          </details>
+
+          <details id="memory-inspector">
+            <summary id="memory-inspector-title">Admin: memory inspector (read-only)</summary>
+            <p class="admin-note">
+              Shows the memory rows the current admin session can see
+              under RLS, including superseded and inactive rows for
+              audit visibility. Private rows from other users,
+              family-shared rows where the admin is not in the
+              senior's circle, and password-locked rows without an
+              active vault session are filtered at the database — not
+              in the UI. Password-locked content is additionally
+              redacted in the browser as defense-in-depth.
+            </p>
+            <div id="memory-inspector-controls">
+              <button id="memory-inspector-refresh" type="button">Refresh</button>
+              <span id="memory-inspector-meta"></span>
+            </div>
+            <table id="memory-inspector-table">
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Owner</th>
+                  <th>Visibility</th>
+                  <th>Authority</th>
+                  <th>Status / Flags</th>
+                  <th>Why visible?</th>
+                  <th>Content</th>
+                </tr>
+              </thead>
+              <tbody id="memory-inspector-tbody"></tbody>
+            </table>
+          </details>
+
+          <details id="governance-events">
+            <summary id="governance-events-title">Admin: governance events (read-only)</summary>
+            <p class="admin-note">
+              Recent rows from governance_audit_log — memory created,
+              memory updated (corrections, supersessions, promotions),
+              and other governance-relevant events. memory.list
+              events are filtered out by default since they fire on
+              every chat turn. RLS narrows by the existing log
+              policies — admins see all in-pilot events; non-admins
+              see only events targeting them.
+            </p>
+            <div id="governance-events-controls">
+              <button id="governance-events-refresh" type="button">Refresh</button>
+              <span id="governance-events-meta"></span>
+            </div>
+            <table id="governance-events-table">
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Event</th>
+                  <th>Actor</th>
+                  <th>Target user</th>
+                  <th>Memory</th>
+                  <th>Outcome</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody id="governance-events-tbody"></tbody>
+            </table>
+          </details>
+        </section>
+
+        <section id="circle-card" aria-labelledby="circle-title">
+          <details>
+            <summary id="circle-title">Your circle — who can see your shared memories</summary>
+            <p class="admin-note">
+              Adding a contact does NOT automatically grant access.
+              Check "family_shared" to let that contact see memories
+              you mark as shared. Leaving it unchecked is a default-
+              deny stub — useful for keeping someone in your circle
+              record without granting any visibility.
+            </p>
+            <form id="circle-add-form" autocomplete="off">
+              <label for="circle-add-email">Add contact by email</label>
+              <input
+                id="circle-add-email"
+                name="email"
+                type="email"
+                placeholder="contact@example.com"
+                required
+              />
+              <label class="role-option">
+                <input
+                  type="checkbox"
+                  id="circle-add-family-shared"
+                  name="family_shared"
+                />
+                Grant access to family_shared memories
+              </label>
+              <button id="circle-add-submit" type="submit">Add contact</button>
+              <p id="circle-add-error" class="error-block" role="alert" hidden></p>
+              <p id="circle-add-ok" class="info-block" role="status" hidden></p>
+            </form>
+
+            <div id="circle-controls">
+              <button id="circle-refresh" type="button">Refresh</button>
+              <span id="circle-meta"></span>
+            </div>
+            <table id="circle-table">
+              <thead>
+                <tr>
+                  <th>Contact</th>
+                  <th>Role</th>
+                  <th>family_shared</th>
+                  <th>Added</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="circle-tbody"></tbody>
             </table>
           </details>
         </section>
