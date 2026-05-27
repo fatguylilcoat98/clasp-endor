@@ -238,21 +238,62 @@ function createTestDoorWiring(options) {
    * listMemoriesForInspector — read-only inspector surface.
    *
    * Opens withMemoryContext with the CALLER's session vars, then
-   * calls ctx.listVisibleMemories. RLS narrows the result to rows
-   * the caller is permitted to see — owner via pilot+user, family-
-   * shared via circle_contacts, password_locked via open vault
-   * session. The inspector does NOT escalate. An admin who has not
-   * unlocked a vault sees no password_locked content; an admin who
-   * is not in another senior's circle sees no family_shared rows.
-   * The admin-role gate is enforced at the HTTP layer (server.js)
-   * to hide the inspector UI from non-admin users; it does not
-   * widen DB access.
+   * calls ctx.listMemoriesForInspector (the inspector-scoped
+   * repository read, which INCLUDES superseded + inactive rows so
+   * the admin can see the full audit trail). RLS narrows the result
+   * to rows the caller is permitted to see — owner via pilot+user,
+   * family-shared via circle_contacts, password_locked via open
+   * vault session. The inspector does NOT escalate. An admin who
+   * has not unlocked a vault sees no password_locked content; an
+   * admin who is not in another senior's circle sees no family_
+   * shared rows. The admin-role gate is enforced at the HTTP layer
+   * (server.js) to hide the inspector UI from non-admin users; it
+   * does not widen DB access.
    *
-   * The returned rows project only the columns the inspector
-   * surface needs. content is included because RLS already filtered
-   * to visible rows; a row that reaches here is one the caller is
-   * permitted to see.
+   * Each returned row carries derived metadata so the UI can render
+   * badges and tooltips without re-implementing the rules:
+   *   - whyVisible: short string explaining the access path
+   *   - flags: array of indicator strings (SUPERSEDED, INADMISSIBLE,
+   *            CORRECTION, RETRACTION, INFERRED, INACTIVE,
+   *            GOVERNANCE_PENDING)
+   *   - redacted: boolean — true when the row is password_locked and
+   *            the caller is NOT the owner; defense in depth in case
+   *            RLS were ever to leak such a row, the inspector still
+   *            does not render content
    */
+  function computeInspectorMetadata(row, sessionCtx) {
+    const owning = row.owning_user_id;
+    const isOwner = owning === sessionCtx.userId;
+    const flags = [];
+    if (row.active === false || row.memory_status === 'SUPERSEDED') flags.push('SUPERSEDED');
+    if (row.memory_status === 'GOVERNANCE_PENDING') flags.push('GOVERNANCE_PENDING');
+    if (row.admissibility_state === 'inadmissible') flags.push('INADMISSIBLE');
+    if (row.provenance === 'AI_INFERRED') flags.push('INFERRED');
+    const content = typeof row.content === 'string' ? row.content : '';
+    if (content.startsWith('CORRECTION:')) flags.push('CORRECTION');
+    if (content.startsWith('RETRACTION:')) flags.push('RETRACTION');
+    if (row.authority_level === 'LOW_CONFIDENCE') flags.push('LOW_AUTHORITY');
+
+    let whyVisible;
+    if (row.visibility_level === 'password_locked') {
+      whyVisible = isOwner
+        ? 'owner with active vault session — RLS unlocked password_locked content'
+        : 'leaked — should not be visible (defense-in-depth redaction will strip content)';
+    } else if (isOwner) {
+      whyVisible = 'owner — RLS matched on pilot + user_id';
+    } else if (row.visibility_level === 'family_shared') {
+      whyVisible = 'family_shared — caller is in owner\'s circle with the family_shared grant';
+    } else if (sessionCtx.userRole === 'admin') {
+      whyVisible = 'admin — RLS admin-row policy matched (admin-targeted memory in the pilot)';
+    } else {
+      whyVisible = 'unexpected — RLS surfaced a row that does not match any visibility tier the caller has';
+    }
+
+    const redacted = row.visibility_level === 'password_locked' && !isOwner;
+
+    return { whyVisible, flags, redacted };
+  }
+
   async function listMemoriesForInspector(params) {
     if (!params || typeof params !== 'object') {
       throw new Error('listMemoriesForInspector: params object is required');
@@ -278,19 +319,81 @@ function createTestDoorWiring(options) {
       memoryPool,
       { pilotInstanceId, userId, userRole },
       async (ctx) => {
-        const rows = await ctx.listVisibleMemories({ limit: cap });
+        const rows = await ctx.listMemoriesForInspector({ limit: cap });
+        return rows.map((r) => {
+          const meta = computeInspectorMetadata(r, { userId, userRole });
+          return {
+            id: r.id,
+            // Redact content if the row is password_locked AND the
+            // caller is not the owner. RLS should already filter
+            // such rows out, but this is the second line of defense.
+            content: meta.redacted ? null : r.content,
+            visibility_level: r.visibility_level,
+            memory_status: r.memory_status,
+            authority_level: r.authority_level,
+            provenance: r.provenance,
+            admissibility_state: r.admissibility_state,
+            owning_user_id: r.owning_user_id,
+            active: r.active,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+            whyVisible: meta.whyVisible,
+            flags: meta.flags,
+            redacted: meta.redacted,
+          };
+        });
+      }
+    );
+  }
+
+  /*
+   * listGovernanceEvents — read-only audit-log surface for the
+   * admin debug panel. Goes through withMemoryContext so RLS narrows
+   * by the existing governance_audit_log policies. memory.list
+   * events are filtered out by default (each chat turn emits at
+   * least one) so the panel surfaces governance-relevant events.
+   */
+  async function listGovernanceEvents(params) {
+    if (!params || typeof params !== 'object') {
+      throw new Error('listGovernanceEvents: params object is required');
+    }
+    const { pilotInstanceId, userId, userRole, limit, includeListEvents } = params;
+    if (typeof pilotInstanceId !== 'string' || !UUID_RE.test(pilotInstanceId)) {
+      const err = new Error('listGovernanceEvents: pilotInstanceId must be a UUID');
+      err.userClass = 'bad_request';
+      throw err;
+    }
+    if (typeof userId !== 'string' || !UUID_RE.test(userId)) {
+      const err = new Error('listGovernanceEvents: userId must be a UUID');
+      err.userClass = 'bad_request';
+      throw err;
+    }
+    if (typeof userRole !== 'string' || userRole.length === 0) {
+      const err = new Error('listGovernanceEvents: userRole is required');
+      err.userClass = 'bad_request';
+      throw err;
+    }
+    const cap = Number.isInteger(limit) && limit > 0 && limit <= 200 ? limit : 50;
+    return await withMemoryContext(
+      memoryPool,
+      { pilotInstanceId, userId, userRole },
+      async (ctx) => {
+        const rows = await ctx.listRecentAuditEvents({
+          limit: cap,
+          includeListEvents: !!includeListEvents,
+        });
         return rows.map((r) => ({
           id: r.id,
-          content: r.content,
-          visibility_level: r.visibility_level,
-          memory_status: r.memory_status,
-          authority_level: r.authority_level,
-          provenance: r.provenance,
-          admissibility_state: r.admissibility_state,
-          owning_user_id: r.owning_user_id,
-          active: r.active,
-          created_at: r.created_at,
-          updated_at: r.updated_at,
+          memoryId: r.memory_id,
+          targetUserId: r.target_user_id,
+          eventType: r.event_type,
+          actorUserId: r.actor_user_id,
+          actorRole: r.actor_role,
+          oldVisibility: r.old_visibility,
+          newVisibility: r.new_visibility,
+          reason: r.reason,
+          outcome: r.outcome,
+          createdAt: r.created_at,
         }));
       }
     );
@@ -392,6 +495,7 @@ function createTestDoorWiring(options) {
   return Object.freeze({
     handleChat,
     listMemoriesForInspector,
+    listGovernanceEvents,
     listCircleContacts,
     addCircleContact,
     setCircleContactPermissions,

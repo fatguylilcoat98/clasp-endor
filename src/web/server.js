@@ -18,6 +18,8 @@
  *   GET  /api/admin/recent  → ring buffer (admin only)
  *   GET  /api/admin/memories→ read-only memory inspector (admin only;
  *                             RLS-narrowed to whatever the admin can see)
+ *   GET  /api/admin/governance-events → recent governance_audit_log
+ *                             rows (admin only; RLS-narrowed)
  *   GET  /api/circle/contacts        → list caller's circle
  *   POST /api/circle/contacts        → add by email + visibility scope
  *   POST /api/circle/contacts/scope  → update scope (or empty = revoke)
@@ -198,6 +200,9 @@ function createTestDoorServer(options) {
   }
   if (typeof wiring.listMemoriesForInspector !== 'function') {
     throw new Error('createTestDoorServer: wiring.listMemoriesForInspector is required');
+  }
+  if (typeof wiring.listGovernanceEvents !== 'function') {
+    throw new Error('createTestDoorServer: wiring.listGovernanceEvents is required');
   }
   if (typeof wiring.listCircleContacts !== 'function'
       || typeof wiring.addCircleContact !== 'function'
@@ -552,6 +557,33 @@ function createTestDoorServer(options) {
     });
   }
 
+  async function handleAdminGovernanceEvents(req, res) {
+    const session = getSession(req);
+    if (!session) {
+      return jsonResponse(res, 401, { error: 'no session — sign in first' });
+    }
+    if (session.userRole !== 'admin') {
+      return jsonResponse(res, 403, { error: 'admin role required' });
+    }
+    let events;
+    try {
+      events = await wiring.listGovernanceEvents({
+        pilotInstanceId,
+        userId: session.userId,
+        userRole: session.userRole,
+        limit: 50,
+      });
+    } catch (err) {
+      const errorClass = describeErrClass(err);
+      log('warn', 'web.admin.governance_events_failed', { error_class: errorClass });
+      return jsonResponse(res, 502, { error: 'failed to load events', errorClass });
+    }
+    return jsonResponse(res, 200, {
+      count: events.length,
+      events,
+    });
+  }
+
   // ---------- Phase 3: circle contacts ----------
 
   function userClassToStatus(uc) {
@@ -699,6 +731,7 @@ function createTestDoorServer(options) {
     if (method === 'POST' && pathname === '/api/chat')   return handleChat(req, res);
     if (method === 'GET'  && pathname === '/api/admin/recent') return handleAdminRecent(req, res);
     if (method === 'GET'  && pathname === '/api/admin/memories') return handleAdminMemories(req, res);
+    if (method === 'GET'  && pathname === '/api/admin/governance-events') return handleAdminGovernanceEvents(req, res);
     if (method === 'GET'  && pathname === '/api/circle/contacts') return handleCircleList(req, res);
     if (method === 'POST' && pathname === '/api/circle/contacts') return handleCircleAdd(req, res);
     if (method === 'POST' && pathname === '/api/circle/contacts/scope') return handleCircleSetScope(req, res);

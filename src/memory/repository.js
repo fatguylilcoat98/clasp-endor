@@ -125,6 +125,43 @@ async function listVisibleMemories(client, sessionCtx, options) {
   return result.rows;
 }
 
+// Inspector read path — includes SUPERSEDED + inactive rows so the
+// admin debug surface can surface the full audit trail (a corrected
+// fact, a deactivated row). RLS still narrows by pilot/owner/family/
+// admin policies; this function does NOT widen visibility, it only
+// drops the "active=true AND memory_status IN (WORKING_ACTIVE,
+// VERIFIED)" gates that the brain's read path applies for retrieval
+// hygiene.
+//
+// Same audit pairing as listVisibleMemories — one memory.list event
+// per call, with count in the reason field.
+async function listMemoriesForInspector(client, sessionCtx, options) {
+  const opts = options || {};
+  const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : 100;
+
+  const result = await client.query(
+    'SELECT id, owning_user_id, content, provenance, visibility_level, '
+      + 'admissibility_state, memory_status, vault_id, active, created_at, updated_at '
+      + 'FROM memory_store '
+      + 'ORDER BY '
+      + '  CASE WHEN active = true THEN 0 ELSE 1 END, '
+      + '  created_at DESC '
+      + 'LIMIT $1',
+    [limit]
+  );
+
+  await insertAuditEvent(client, sessionCtx, {
+    eventType: EVENT_TYPES.MEMORY_LIST,
+    outcome: 'allowed',
+    reason: `inspector count=${result.rowCount}`,
+  });
+
+  for (const row of result.rows) {
+    row.authority_level = computeAuthority(row);
+  }
+  return result.rows;
+}
+
 async function insertPrivateMemory(client, sessionCtx, input) {
   return insertMemoryAtVisibility(client, sessionCtx, input, 'private');
 }
@@ -314,8 +351,36 @@ async function deactivateMemory(client, sessionCtx, memoryId, reason) {
   return { id: memoryId, deactivatedAt: result.rows[0].updated_at };
 }
 
+// Inspector audit-log read — returns recent governance_audit_log rows
+// for the admin debug surface. RLS narrows the result by the existing
+// governance_audit_log policies: admin sees all in-pilot events, owner
+// sees events targeting them. memory.list events are filtered OUT by
+// default because they swamp the panel — every chat turn issues at
+// least one. opts.includeListEvents=true keeps them for diagnostics.
+async function listRecentAuditEvents(client, sessionCtx, options) {
+  const opts = options || {};
+  const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : 50;
+  const includeListEvents = opts.includeListEvents === true;
+  const params = [limit];
+  let where = '';
+  if (!includeListEvents) {
+    where = "WHERE event_type != 'memory.list' ";
+  }
+  const result = await client.query(
+    'SELECT id, memory_id, target_user_id, event_type, actor_user_id, '
+      + 'actor_role, old_visibility, new_visibility, reason, outcome, '
+      + 'created_at FROM governance_audit_log '
+      + where
+      + 'ORDER BY created_at DESC LIMIT $1',
+    params
+  );
+  return result.rows;
+}
+
 module.exports = {
   listVisibleMemories,
+  listMemoriesForInspector,
+  listRecentAuditEvents,
   insertPrivateMemory,
   insertSharedMemory,
   promoteMemoryToVerified,

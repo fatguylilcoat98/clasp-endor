@@ -59,6 +59,7 @@ function buildStubWiring(textOrError, opts) {
   const memoryFields = o.memory || { stored: 0, extracted: 0 };
   const inspectorRows = Array.isArray(o.inspectorRows) ? o.inspectorRows : [];
   const inspectorCalls = [];
+  const eventsCalls = [];
   const circleListCalls = [];
   const circleAddCalls = [];
   const circleScopeCalls = [];
@@ -102,6 +103,11 @@ function buildStubWiring(textOrError, opts) {
       if (o.inspectorError) throw o.inspectorError;
       return inspectorRows;
     },
+    listGovernanceEvents: async (params) => {
+      eventsCalls.push(params);
+      if (o.eventsError) throw o.eventsError;
+      return Array.isArray(o.events) ? o.events : [];
+    },
     // Phase 3: circle CRUD stubs. Test can preload contacts via
     // opts.circleContacts; addCircleContact returns a synthetic id;
     // setCircleContactPermissions just echoes the call. Tests that
@@ -128,6 +134,7 @@ function buildStubWiring(textOrError, opts) {
     },
     close: async () => {},
     _inspectorCalls: inspectorCalls,
+    _eventsCalls: eventsCalls,
     _circleListCalls: circleListCalls,
     _circleAddCalls: circleAddCalls,
     _circleScopeCalls: circleScopeCalls,
@@ -583,6 +590,7 @@ test('chat with visibilityHint=family_shared: wiring receives the hint, response
       };
     },
     listMemoriesForInspector: async () => [],
+    listGovernanceEvents: async () => [],
     listCircleContacts: async () => [],
     addCircleContact: async () => ({ id: 'x', contactUserId: 'y', visibilityLevels: [], createdAt: '' }),
     setCircleContactPermissions: async (p) => ({ id: p.id, visibilityLevels: p.visibilityLevels }),
@@ -639,6 +647,7 @@ test('chat with no visibilityHint: defaults to "private"', async () => {
       };
     },
     listMemoriesForInspector: async () => [],
+    listGovernanceEvents: async () => [],
     listCircleContacts: async () => [],
     addCircleContact: async () => ({ id: 'x', contactUserId: 'y', visibilityLevels: [], createdAt: '' }),
     setCircleContactPermissions: async (p) => ({ id: p.id, visibilityLevels: p.visibilityLevels }),
@@ -914,6 +923,109 @@ test('admin-memories: wiring failure → 502 with coarse error class', async () 
     assert.equal(r.statusCode, 502);
     assert.equal(r.body.errorClass, 'ECONNREFUSED');
     // The raw error message must NOT be echoed.
+    assert.doesNotMatch(JSON.stringify(r.body), /connection refused/i);
+  } finally { ctx.server.close(); }
+});
+
+// =================================================================
+// Governance events panel — admin-only, RLS-narrowed
+// =================================================================
+
+test('admin-governance-events: no session → 401', async () => {
+  const ctx = await startServer('hi');
+  try {
+    const r = await req(ctx.port, 'GET', '/api/admin/governance-events');
+    assert.equal(r.statusCode, 401);
+  } finally { ctx.server.close(); }
+});
+
+test('admin-governance-events: senior role → 403, wiring not invoked', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'chris@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_CHRIS, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_CHRIS, email: 'chris@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const ctx = await startServer('hi', { supabaseAuth });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'GET', '/api/admin/governance-events', {
+      headers: { Cookie: cookieFromRes(login) },
+    });
+    assert.equal(r.statusCode, 403);
+    assert.equal(ctx.wiring._eventsCalls.length, 0);
+  } finally { ctx.server.close(); }
+});
+
+test('admin-governance-events: admin → 200, returns wiring rows; session userId is passed through', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'admin@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_ADMIN, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_ADMIN, email: 'admin@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const events = [
+    {
+      id: '00000000-0000-0000-0000-000000000aaa',
+      memoryId: '00000000-0000-0000-0000-000000000001',
+      targetUserId: 'dddddddd-0000-0000-0000-000000000001',
+      eventType: 'memory.updated',
+      actorUserId: 'dddddddd-0000-0000-0000-000000000001',
+      actorRole: 'senior',
+      oldVisibility: null,
+      newVisibility: null,
+      reason: 'USER_CORRECTED',
+      outcome: 'allowed',
+      createdAt: new Date('2024-01-01T00:00:00Z').toISOString(),
+    },
+  ];
+  const ctx = await startServer('hi', { supabaseAuth, events });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'admin@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'GET', '/api/admin/governance-events', {
+      headers: { Cookie: cookieFromRes(login) },
+    });
+    assert.equal(r.statusCode, 200);
+    assert.equal(r.body.count, 1);
+    assert.equal(r.body.events[0].eventType, 'memory.updated');
+    assert.equal(r.body.events[0].reason, 'USER_CORRECTED');
+    assert.equal(ctx.wiring._eventsCalls.length, 1);
+    assert.equal(ctx.wiring._eventsCalls[0].userRole, 'admin');
+  } finally { ctx.server.close(); }
+});
+
+test('admin-governance-events: wiring failure → 502 with coarse error class', async () => {
+  const supabaseAuth = buildStubSupabaseAuth({
+    loginResults: {
+      'admin@test.example': {
+        ok: true, confirmationPending: false,
+        accessToken: makeValidJwt(AUTH_ADMIN, 'https://test.supabase.co/auth/v1'),
+        userId: AUTH_ADMIN, email: 'admin@test.example', emailConfirmed: true,
+      },
+    },
+  });
+  const boom = new Error('connection refused — should not echo');
+  boom.code = 'ECONNREFUSED';
+  const ctx = await startServer('hi', { supabaseAuth, eventsError: boom });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'admin@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'GET', '/api/admin/governance-events', {
+      headers: { Cookie: cookieFromRes(login) },
+    });
+    assert.equal(r.statusCode, 502);
+    assert.equal(r.body.errorClass, 'ECONNREFUSED');
     assert.doesNotMatch(JSON.stringify(r.body), /connection refused/i);
   } finally { ctx.server.close(); }
 });

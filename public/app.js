@@ -45,6 +45,10 @@
     inspectorMeta:    document.getElementById('memory-inspector-meta'),
     inspectorTbody:   document.getElementById('memory-inspector-tbody'),
 
+    eventsRefresh:    document.getElementById('governance-events-refresh'),
+    eventsMeta:       document.getElementById('governance-events-meta'),
+    eventsTbody:      document.getElementById('governance-events-tbody'),
+
     circleCard:       document.getElementById('circle-card'),
     circleAddForm:    document.getElementById('circle-add-form'),
     circleAddEmail:   document.getElementById('circle-add-email'),
@@ -111,6 +115,7 @@
       el.adminCard.hidden = false;
       refreshAdmin();
       refreshMemoryInspector();
+      refreshGovernanceEvents();
     } else {
       el.adminCard.hidden = true;
     }
@@ -281,7 +286,7 @@
           intentType: null,
           memoryCount: null,
         });
-        if (!el.adminCard.hidden) { refreshAdmin(); refreshMemoryInspector(); }
+        if (!el.adminCard.hidden) { refreshAdmin(); refreshMemoryInspector(); refreshGovernanceEvents(); }
         return;
       }
       const b = r.body;
@@ -298,7 +303,7 @@
         factsExtracted: b.factsExtracted,
         visibilityLevel: b.visibilityLevel,
       });
-      if (!el.adminCard.hidden) { refreshAdmin(); refreshMemoryInspector(); }
+      if (!el.adminCard.hidden) { refreshAdmin(); refreshMemoryInspector(); refreshGovernanceEvents(); }
     } catch (err) {
       showError(el.chatError, 'Network error. The companion did not respond.');
     } finally {
@@ -340,6 +345,13 @@
     return node;
   }
 
+  function badge(text, cls) {
+    const span = document.createElement('span');
+    span.className = 'inspector-badge ' + cls;
+    span.textContent = text;
+    return span;
+  }
+
   async function refreshMemoryInspector() {
     try {
       const r = await getJson('/api/admin/memories');
@@ -348,27 +360,104 @@
         return;
       }
       const memories = (r.body && r.body.memories) || [];
-      el.inspectorMeta.textContent = memories.length + ' rows (RLS-narrowed)';
+      el.inspectorMeta.textContent = memories.length + ' rows (RLS-narrowed, includes superseded)';
       el.inspectorTbody.innerHTML = '';
       for (const m of memories) {
         const tr = document.createElement('tr');
         tr.appendChild(td(m.created_at ? new Date(m.created_at).toLocaleString() : ''));
         tr.appendChild(td(m.owning_user_id ? m.owning_user_id.slice(0, 8) + '…' : ''));
+
         const visTd = document.createElement('td');
-        visTd.textContent = m.visibility_level || '';
-        if (m.visibility_level) visTd.className = 'vis-' + m.visibility_level;
+        if (m.visibility_level) {
+          visTd.appendChild(badge(m.visibility_level, 'badge-vis-' + m.visibility_level));
+        }
         tr.appendChild(visTd);
-        tr.appendChild(td(m.memory_status));
-        tr.appendChild(td(m.authority_level));
-        tr.appendChild(td(m.provenance));
+
+        const authTd = document.createElement('td');
+        if (m.authority_level) {
+          authTd.appendChild(badge(m.authority_level, 'badge-authority-' + m.authority_level));
+        }
+        authTd.appendChild(document.createElement('br'));
+        const provSmall = document.createElement('small');
+        provSmall.textContent = m.provenance || '';
+        provSmall.style.color = '#777';
+        authTd.appendChild(provSmall);
+        tr.appendChild(authTd);
+
+        const flagsTd = document.createElement('td');
+        const allFlags = Array.isArray(m.flags) ? m.flags.slice() : [];
+        if (m.redacted) allFlags.push('REDACTED');
+        if (m.memory_status && !allFlags.includes(m.memory_status)
+            && m.memory_status !== 'WORKING_ACTIVE' && m.memory_status !== 'VERIFIED') {
+          allFlags.unshift(m.memory_status);
+        }
+        if (allFlags.length === 0) {
+          const ok = document.createElement('small');
+          ok.textContent = m.memory_status || '';
+          ok.style.color = '#777';
+          flagsTd.appendChild(ok);
+        } else {
+          for (const f of allFlags) {
+            flagsTd.appendChild(badge(f, 'badge-flag-' + f));
+          }
+        }
+        tr.appendChild(flagsTd);
+
+        const whyTd = document.createElement('td');
+        whyTd.className = 'inspector-why';
+        whyTd.textContent = m.whyVisible || '';
+        tr.appendChild(whyTd);
+
         const contentTd = document.createElement('td');
         contentTd.className = 'content-cell';
-        contentTd.textContent = m.content == null ? '' : String(m.content);
+        if (m.redacted || m.content == null) {
+          contentTd.className += ' inspector-redacted';
+          contentTd.textContent = '[redacted — password_locked content not rendered]';
+        } else {
+          contentTd.textContent = String(m.content);
+        }
         tr.appendChild(contentTd);
         el.inspectorTbody.appendChild(tr);
       }
     } catch (err) {
       el.inspectorMeta.textContent = 'Network error loading inspector.';
+    }
+  }
+
+  async function refreshGovernanceEvents() {
+    try {
+      const r = await getJson('/api/admin/governance-events');
+      if (!r.ok) {
+        el.eventsMeta.textContent = 'Failed to load (' + r.status + ').';
+        return;
+      }
+      const events = (r.body && r.body.events) || [];
+      el.eventsMeta.textContent = events.length + ' events (RLS-narrowed)';
+      el.eventsTbody.innerHTML = '';
+      for (const e of events) {
+        const tr = document.createElement('tr');
+        tr.appendChild(td(e.createdAt ? new Date(e.createdAt).toLocaleString() : ''));
+        const typeTd = document.createElement('td');
+        const typeSpan = document.createElement('span');
+        typeSpan.className = 'event-type-badge event-type-' + e.eventType;
+        typeSpan.textContent = e.eventType;
+        typeTd.appendChild(typeSpan);
+        tr.appendChild(typeTd);
+        const actorTd = document.createElement('td');
+        actorTd.textContent = (e.actorRole || '') + ' '
+          + (e.actorUserId ? e.actorUserId.slice(0, 8) + '…' : '');
+        tr.appendChild(actorTd);
+        tr.appendChild(td(e.targetUserId ? e.targetUserId.slice(0, 8) + '…' : ''));
+        tr.appendChild(td(e.memoryId ? e.memoryId.slice(0, 8) + '…' : ''));
+        const outcomeTd = document.createElement('td');
+        outcomeTd.textContent = e.outcome || '';
+        outcomeTd.className = 'outcome-' + (e.outcome || '');
+        tr.appendChild(outcomeTd);
+        tr.appendChild(td(e.reason || ''));
+        el.eventsTbody.appendChild(tr);
+      }
+    } catch (err) {
+      el.eventsMeta.textContent = 'Network error loading events.';
     }
   }
 
@@ -467,6 +556,7 @@
   el.chatForm.addEventListener('submit', onChatSubmit);
   el.adminRefresh.addEventListener('click', refreshAdmin);
   if (el.inspectorRefresh) el.inspectorRefresh.addEventListener('click', refreshMemoryInspector);
+  if (el.eventsRefresh) el.eventsRefresh.addEventListener('click', refreshGovernanceEvents);
   if (el.circleRefresh) el.circleRefresh.addEventListener('click', refreshCircle);
   if (el.circleAddForm) el.circleAddForm.addEventListener('submit', onCircleAddSubmit);
   el.logoutButton.addEventListener('click', onLogout);
