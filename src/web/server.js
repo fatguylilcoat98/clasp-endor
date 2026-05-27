@@ -173,7 +173,16 @@ function loadStatic(repoRoot, rel) {
  *   recent             — recent.createRecentBuffer instance.
  *   supabaseAuth       — supabase-auth.createSupabaseAuthClient instance.
  *   identity           — identity.createIdentityResolver instance.
- *   supabaseJwtSecret  — HS256 secret used to verify access tokens.
+ *   supabaseJwtSecret  — HS256 secret used to verify legacy tokens.
+ *                        May be unused if the project signs with
+ *                        asymmetric keys; we still require it so
+ *                        either signing scheme is accepted without
+ *                        a redeploy.
+ *   jwtKeyLookup       — (kid) => Promise<jwk|null>. Resolves the
+ *                        JWK for a given key id. Used for RS256 /
+ *                        ES256 tokens issued via Supabase JWT
+ *                        signing keys. Production wiring builds
+ *                        this from createJwksClient.
  *   expectedJwtIssuer  — string, the expected `iss` claim on the JWT.
  *   log                — (level, event, fields) callback.
  *   secureCookie       — boolean; tests pass false, production true.
@@ -184,7 +193,7 @@ function createTestDoorServer(options) {
   }
   const {
     repoRoot, pilotInstanceId, sessionCodec, wiring, recent,
-    supabaseAuth, identity, supabaseJwtSecret, expectedJwtIssuer, log,
+    supabaseAuth, identity, supabaseJwtSecret, jwtKeyLookup, expectedJwtIssuer, log,
   } = options;
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
     throw new Error('createTestDoorServer: repoRoot is required');
@@ -220,6 +229,9 @@ function createTestDoorServer(options) {
   }
   if (typeof supabaseJwtSecret !== 'string' || supabaseJwtSecret.length < 16) {
     throw new Error('createTestDoorServer: supabaseJwtSecret is required');
+  }
+  if (typeof jwtKeyLookup !== 'function') {
+    throw new Error('createTestDoorServer: jwtKeyLookup function is required');
   }
   if (typeof expectedJwtIssuer !== 'string' || expectedJwtIssuer.length === 0) {
     throw new Error('createTestDoorServer: expectedJwtIssuer is required');
@@ -380,8 +392,9 @@ function createTestDoorServer(options) {
     // us the user.id, but verifying the JWT we received proves the
     // response wasn't tampered with in transit.
     try {
-      const claims = verifySupabaseJwt(auth.accessToken, {
+      const claims = await verifySupabaseJwt(auth.accessToken, {
         secret: supabaseJwtSecret,
+        getKey: jwtKeyLookup,
         expectedIssuer: expectedJwtIssuer,
       });
       if (claims.sub !== auth.userId) {
