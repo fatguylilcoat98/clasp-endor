@@ -275,16 +275,30 @@ function createTestDoorWiring(options) {
     if (row.authority_level === 'LOW_CONFIDENCE') flags.push('LOW_AUTHORITY');
 
     let whyVisible;
-    if (row.visibility_level === 'password_locked') {
-      whyVisible = isOwner
-        ? 'owner with active vault session — RLS unlocked password_locked content'
-        : 'leaked — should not be visible (defense-in-depth redaction will strip content)';
-    } else if (isOwner) {
-      whyVisible = 'owner — RLS matched on pilot + user_id';
+    if (isOwner) {
+      // memory_store_owner matches by pilot+owning_user_id without
+      // checking visibility tier — the owner sees their own rows
+      // unconditionally, including password_locked. The vault
+      // session gate in memory_store_password_locked is for
+      // non-owners only.
+      whyVisible = row.visibility_level === 'password_locked'
+        ? 'owner — RLS matched on pilot + user_id (owner policy is tier-blind; vault session is not required for the owner)'
+        : 'owner — RLS matched on pilot + user_id';
+    } else if (row.visibility_level === 'password_locked') {
+      // A non-owner reaching a password_locked row would require a
+      // matching memory_vault_sessions row with their own user_id.
+      // memory_vault_sessions has no FOR INSERT policy, so lylo_app
+      // cannot fabricate such a session. This row should not be
+      // here — defense-in-depth redaction will strip its content.
+      whyVisible = 'leaked — non-owner should not see password_locked; content is redacted as defense-in-depth';
     } else if (row.visibility_level === 'family_shared') {
       whyVisible = 'family_shared — caller is in owner\'s circle with the family_shared grant';
     } else if (sessionCtx.userRole === 'admin') {
-      whyVisible = 'admin — RLS admin-row policy matched (admin-targeted memory in the pilot)';
+      // There is intentionally no memory_store_admin policy
+      // (OQ-14.2). Admins do NOT see other users' private memories.
+      // This branch should not fire — if it does, RLS has surfaced
+      // a row the admin policy chain does not cover.
+      whyVisible = 'admin — unexpected; no admin SELECT policy on memory_store; investigate as a possible leak';
     } else {
       whyVisible = 'unexpected — RLS surfaced a row that does not match any visibility tier the caller has';
     }

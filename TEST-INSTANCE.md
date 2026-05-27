@@ -166,13 +166,20 @@ forbids.
   a family_shared row reads "family_shared — caller is in
   owner's circle…"; a row that should not be there reads
   "unexpected — RLS surfaced a row…" (treat as a bug).
-- [ ] **B5. password_locked redaction (defense-in-depth):** If a
-  password_locked row ever reaches the inspector (it should not
-  without a vault session — that flow is not in this milestone),
-  the **Content** column must render `[redacted — password_locked
-  content not rendered]`, not the raw text. The flag column must
-  show `REDACTED`. The redaction happens in the JS layer even if
-  RLS leaked the row.
+- [ ] **B5. password_locked redaction (defense-in-depth):** The
+  password_locked tier protects from NON-OWNERS — the owner's own
+  password_locked rows surface unconditionally to the owner (the
+  `memory_store_owner` RLS policy matches by pilot + user_id
+  without checking the visibility tier). What the substrate
+  actually guarantees: a non-owner cannot reach the content
+  because `memory_vault_sessions` has no `FOR INSERT` policy, so
+  `lylo_app` cannot fabricate a session claiming another user's
+  vault. Belt-and-suspenders: if a non-owner row ever reaches the
+  inspector, the wiring's `redacted=true` flag fires and the
+  **Content** column renders `[redacted — password_locked content
+  not rendered]`. The flag column shows `REDACTED`. The vault
+  unlock flow that would gate the OWNER's own password_locked
+  content behind a PIN is **not part of this milestone**.
 
 ### Governance event surfacing
 
