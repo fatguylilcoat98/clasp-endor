@@ -84,7 +84,16 @@ Required Render env vars (the new pieces from Step 1):
 |---|---|
 | `SUPABASE_URL` | The Supabase project URL. Used by the server-side auth client and (verbatim) as the JWT expected issuer prefix. |
 | `SUPABASE_ANON_KEY` | The Supabase anon key. Sent as the `apikey` header on signup/login REST calls. Server-side only; never shipped to the browser. |
-| `SUPABASE_JWT_SECRET` | The HS256 secret Supabase signs access tokens with. The server verifies tokens locally — no per-request round-trip to Supabase. |
+| `SUPABASE_JWT_SECRET` | The HS256 "Legacy JWT Secret" from the Supabase dashboard. Used to verify access tokens issued by projects that have NOT enabled JWT signing keys. Still required even on projects that have migrated to ES256/RS256 — the verifier picks the algorithm from the token header, and the secret is the fallback path. |
+
+The server ALSO fetches Supabase's JWKS at
+`${SUPABASE_URL}/auth/v1/.well-known/jwks.json` to verify tokens
+issued with asymmetric signing keys (ES256 default, RS256 option).
+No env var is needed for the JWKS — the URL is derived from
+`SUPABASE_URL`. If your project has enabled JWT Signing Keys in the
+Supabase dashboard, tokens are signed asymmetrically and the legacy
+HS256 secret alone is insufficient to verify them; the JWKS path is
+what makes login work.
 | `LYLO_BOOTSTRAP_ADMIN_EMAILS` | Comma-separated emails that auto-receive `role='admin'` on first signup. Promotion of existing users is intentionally NOT supported via this var — those go through a future admin flow. |
 | `LYLO_SIGNUP_ALLOWLIST` | Optional. When set, only listed emails (or `*@domain.com` patterns — Step 2) may sign up. Empty/unset = open signup. **Flip this on the moment the deployment carries anything real.** The test door is currently open. |
 

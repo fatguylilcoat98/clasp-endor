@@ -210,6 +210,7 @@ function startServer(stubWiringText, opts) {
     supabaseAuth,
     identity,
     supabaseJwtSecret: JWT_SECRET,
+    jwtKeyLookup: async () => null,
     expectedJwtIssuer: 'https://test.supabase.co/auth/v1',
     log,
     secureCookie: false,
@@ -603,6 +604,7 @@ test('chat with visibilityHint=family_shared: wiring receives the hint, response
   const server = createTestDoorServer({
     repoRoot: REPO_ROOT, pilotInstanceId: PILOT_UUID, sessionCodec, wiring, recent,
     supabaseAuth, identity, supabaseJwtSecret: JWT_SECRET,
+    jwtKeyLookup: async () => null,
     expectedJwtIssuer: 'https://test.supabase.co/auth/v1',
     log, secureCookie: false,
   });
@@ -660,6 +662,7 @@ test('chat with no visibilityHint: defaults to "private"', async () => {
   const server = createTestDoorServer({
     repoRoot: REPO_ROOT, pilotInstanceId: PILOT_UUID, sessionCodec, wiring, recent,
     supabaseAuth, identity, supabaseJwtSecret: JWT_SECRET,
+    jwtKeyLookup: async () => null,
     expectedJwtIssuer: 'https://test.supabase.co/auth/v1',
     log, secureCookie: false,
   });

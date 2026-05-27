@@ -37,6 +37,7 @@ const { createTestDoorServer } = require('../web/server');
 const { createSessionCodec } = require('../web/session');
 const { createRecentBuffer } = require('../web/recent');
 const { createSupabaseAuthClient } = require('../web/supabase-auth');
+const { createJwksClient } = require('../web/jwks-client');
 const { createIdentityResolver, bootstrapAdminEmailsFromEnv } = require('../web/identity');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -151,6 +152,15 @@ async function bootWeb(rawEnv) {
     supabaseUrl: env.SUPABASE_URL,
     anonKey: env.SUPABASE_ANON_KEY,
   });
+  // JWKS client for Supabase's asymmetric JWT signing keys (RS256 /
+  // ES256). The HS256 path uses SUPABASE_JWT_SECRET directly; the
+  // verifier picks based on the token's alg header. Projects that
+  // have enabled JWT Signing Keys in the Supabase dashboard issue
+  // ES256 tokens that the legacy secret CANNOT verify.
+  const jwksClient = createJwksClient({
+    jwksUrl: `${env.SUPABASE_URL.replace(/\/$/, '')}/auth/v1/.well-known/jwks.json`,
+    log: logger.emit,
+  });
   const identity = createIdentityResolver({
     setupDatabaseUrl: env.LYLO_SETUP_DATABASE_URL,
     pilotInstanceId: env.LYLO_PILOT_INSTANCE_ID,
@@ -167,6 +177,7 @@ async function bootWeb(rawEnv) {
     supabaseAuth,
     identity,
     supabaseJwtSecret: env.SUPABASE_JWT_SECRET,
+    jwtKeyLookup: jwksClient.getKey,
     expectedJwtIssuer: `${env.SUPABASE_URL.replace(/\/$/, '')}/auth/v1`,
     log: logger.emit,
     secureCookie: String(env.NODE_ENV || '').toLowerCase() === 'production',
