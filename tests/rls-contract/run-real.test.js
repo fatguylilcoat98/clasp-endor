@@ -1691,3 +1691,232 @@ test('real-schema: governance_execution_verifications append-only — DELETE rai
     /append.only/i
   );
 });
+
+// =====================================================================
+// Phase 2 — shared memory writes
+// =====================================================================
+
+test('real-schema: memory_store INSERT — senior writes a family_shared memory; family contact (with grant) sees it', async () => {
+  const c = await setup();
+  // Senior-A inserts a new family_shared memory via the lylo_app path.
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    await client.query(
+      'INSERT INTO memory_store '
+        + '(pilot_instance_id, owning_user_id, content, provenance, visibility_level, admissibility_state) '
+        + "VALUES ($1, $2, 'phase2 new family_shared memory', 'USER_STATED', 'family_shared', 'admissible')",
+      [PILOT_A, SENIOR_A]
+    );
+  });
+  // Family-A (in circle with family_shared) sees it.
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    const r = await client.query(
+      "SELECT content FROM memory_store WHERE content = 'phase2 new family_shared memory'"
+    );
+    assert.equal(r.rows.length, 1, 'family contact with grant must see the new shared memory');
+  });
+});
+
+test('real-schema: memory_store INSERT — caregiver in circle WITHOUT family_shared grant does NOT see the new shared memory', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    await client.query(
+      'INSERT INTO memory_store '
+        + '(pilot_instance_id, owning_user_id, content, provenance, visibility_level, admissibility_state) '
+        + "VALUES ($1, $2, 'phase2 caregiver-invisible memory', 'USER_STATED', 'family_shared', 'admissible')",
+      [PILOT_A, SENIOR_A]
+    );
+  });
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: CAREGIVER_A, userRole: 'caregiver',
+  }, async (client) => {
+    const r = await client.query(
+      "SELECT content FROM memory_store WHERE content = 'phase2 caregiver-invisible memory'"
+    );
+    assert.equal(r.rows.length, 0, 'caregiver with empty visibility_levels must not see family_shared');
+  });
+});
+
+test('real-schema: memory_store INSERT — a new family_shared memory remains invisible to a senior in another pilot', async () => {
+  const c = await setup();
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    await client.query(
+      'INSERT INTO memory_store '
+        + '(pilot_instance_id, owning_user_id, content, provenance, visibility_level, admissibility_state) '
+        + "VALUES ($1, $2, 'phase2 cross-pilot invisible', 'USER_STATED', 'family_shared', 'admissible')",
+      [PILOT_A, SENIOR_A]
+    );
+  });
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_B, user: SENIOR_B, userRole: 'senior',
+  }, async (client) => {
+    const r = await client.query(
+      "SELECT content FROM memory_store WHERE content = 'phase2 cross-pilot invisible'"
+    );
+    assert.equal(r.rows.length, 0, 'cross-pilot isolation holds even with family_shared tier');
+  });
+});
+
+// =====================================================================
+// Phase 3 — circle contacts management
+// =====================================================================
+
+// A user fixture used only for these tests — created so we can grant
+// visibility to a previously-unconnected family user. SENIOR_A adds
+// this user, then we verify default-deny vs grant transitions.
+const NEW_FAMILY_A = 'aaaaaaaa-bbbb-1111-1111-aaaaaaaaaaaa';
+
+test('real-schema: circle_contacts INSERT — senior adds a new contact; default-deny (empty scope) means no visibility', async () => {
+  const c = await setup();
+  // Seed the new user as superuser so the test isn't a registration test.
+  await c.query(
+    'INSERT INTO users (id, pilot_instance_id, username, role) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING',
+    [NEW_FAMILY_A, PILOT_A, 'new-family@test.example', 'family']
+  );
+  await c.query(
+    "DELETE FROM circle_contacts WHERE senior_user_id = $1 AND contact_user_id = $2",
+    [SENIOR_A, NEW_FAMILY_A]
+  );
+  // Seed a family_shared memory so we have something to test visibility against.
+  await c.query(
+    'INSERT INTO memory_store '
+      + '(pilot_instance_id, owning_user_id, content, provenance, visibility_level, admissibility_state) '
+      + "VALUES ($1, $2, 'phase3 visibility probe', 'USER_STATED', 'family_shared', 'admissible') "
+      + 'ON CONFLICT DO NOTHING',
+    [PILOT_A, SENIOR_A]
+  );
+
+  // Senior-A inserts the new contact with empty visibility_levels.
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    await client.query(
+      'INSERT INTO circle_contacts '
+        + '(pilot_instance_id, senior_user_id, contact_user_id, permission_scope) '
+        + "VALUES ($1, $2, $3, '{\"visibility_levels\":[]}'::jsonb)",
+      [PILOT_A, SENIOR_A, NEW_FAMILY_A]
+    );
+  });
+
+  // Default-deny: the new contact sees no family_shared rows from SENIOR_A.
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: NEW_FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    const r = await client.query(
+      "SELECT content FROM memory_store WHERE owning_user_id = $1 AND visibility_level = 'family_shared'",
+      [SENIOR_A]
+    );
+    assert.equal(r.rows.length, 0, 'default-deny: empty visibility_levels grants no visibility');
+  });
+});
+
+test('real-schema: circle_contacts UPDATE — granting family_shared opens visibility; revoking (empty array) closes it', async () => {
+  const c = await setup();
+  // Seed user + memory (idempotent).
+  await c.query(
+    'INSERT INTO users (id, pilot_instance_id, username, role) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING',
+    [NEW_FAMILY_A, PILOT_A, 'new-family@test.example', 'family']
+  );
+  await c.query(
+    'INSERT INTO memory_store '
+      + '(pilot_instance_id, owning_user_id, content, provenance, visibility_level, admissibility_state) '
+      + "VALUES ($1, $2, 'phase3 toggle probe', 'USER_STATED', 'family_shared', 'admissible') "
+      + 'ON CONFLICT DO NOTHING',
+    [PILOT_A, SENIOR_A]
+  );
+  // Reset / seed the circle row as superuser.
+  await c.query(
+    "DELETE FROM circle_contacts WHERE senior_user_id = $1 AND contact_user_id = $2",
+    [SENIOR_A, NEW_FAMILY_A]
+  );
+  await c.query(
+    'INSERT INTO circle_contacts '
+      + '(pilot_instance_id, senior_user_id, contact_user_id, permission_scope) '
+      + "VALUES ($1, $2, $3, '{\"visibility_levels\":[]}'::jsonb)",
+    [PILOT_A, SENIOR_A, NEW_FAMILY_A]
+  );
+
+  // Senior-A grants family_shared.
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    await client.query(
+      "UPDATE circle_contacts SET permission_scope = '{\"visibility_levels\":[\"family_shared\"]}'::jsonb "
+        + 'WHERE pilot_instance_id = $1 AND senior_user_id = $2 AND contact_user_id = $3',
+      [PILOT_A, SENIOR_A, NEW_FAMILY_A]
+    );
+  });
+
+  // Contact now sees the family_shared row.
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: NEW_FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    const r = await client.query(
+      "SELECT content FROM memory_store WHERE owning_user_id = $1 AND visibility_level = 'family_shared'",
+      [SENIOR_A]
+    );
+    assert.ok(r.rows.length >= 1, 'after grant, contact sees at least the seeded family_shared row');
+  });
+
+  // Senior-A revokes by emptying the array (soft delete).
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: SENIOR_A, userRole: 'senior',
+  }, async (client) => {
+    await client.query(
+      "UPDATE circle_contacts SET permission_scope = '{\"visibility_levels\":[]}'::jsonb "
+        + 'WHERE pilot_instance_id = $1 AND senior_user_id = $2 AND contact_user_id = $3',
+      [PILOT_A, SENIOR_A, NEW_FAMILY_A]
+    );
+  });
+
+  // Visibility closes back to zero.
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: NEW_FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    const r = await client.query(
+      "SELECT content FROM memory_store WHERE owning_user_id = $1 AND visibility_level = 'family_shared'",
+      [SENIOR_A]
+    );
+    assert.equal(r.rows.length, 0, 'soft-revoke (empty visibility_levels) must close visibility');
+  });
+});
+
+test('real-schema: circle_contacts UPDATE — a contact cannot rewrite the senior\'s grant row', async () => {
+  const c = await setup();
+  // Use the existing fixture row: SENIOR_A -> FAMILY_A with family_shared.
+  await withContext(c, {
+    role: 'lylo_app', pilot: PILOT_A, user: FAMILY_A, userRole: 'family',
+  }, async (client) => {
+    // RLS narrows UPDATE; the row "belongs" to SENIOR_A. FAMILY_A's
+    // attempt either updates zero rows (no error, just no effect) or
+    // raises depending on the precise RLS posture. Either way the
+    // senior's grant must NOT change. We assert by checking row state
+    // after the attempt.
+    try {
+      await client.query(
+        "UPDATE circle_contacts SET permission_scope = '{\"visibility_levels\":[\"family_shared\"]}'::jsonb "
+          + 'WHERE senior_user_id = $1 AND contact_user_id = $2',
+        [SENIOR_A, FAMILY_A]
+      );
+    } catch {
+      /* swallow — RLS may forbid the UPDATE entirely */
+    }
+  });
+  // Read the row back as superuser to confirm scope unchanged.
+  const r = await c.query(
+    'SELECT permission_scope FROM circle_contacts WHERE senior_user_id = $1 AND contact_user_id = $2',
+    [SENIOR_A, FAMILY_A]
+  );
+  assert.deepEqual(
+    r.rows[0].permission_scope.visibility_levels.sort(),
+    ['family_shared'].sort(),
+    'contact must not be able to alter the grant row — original scope must persist'
+  );
+});

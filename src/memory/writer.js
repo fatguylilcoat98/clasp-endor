@@ -76,6 +76,15 @@ function createMemoryWriter(options = {}) {
     }
 
     const { userMessage, pilotInstanceId, userId, userRole, options: opts = {} } = input;
+    // Phase 2: per-turn visibility hint. 'private' (default) routes
+    // through ctx.insertPrivateMemory; 'family_shared' routes through
+    // ctx.insertSharedMemory. password_locked is NOT permitted here —
+    // it requires the vault unlock flow that this milestone does not
+    // implement. The hint applies to every fact extracted from THIS
+    // chat turn; corrections (CORRECTION:/RETRACTION:) still go in
+    // at the chosen tier.
+    const visibilityLevel = opts.visibilityLevel === 'family_shared' ? 'family_shared' : 'private';
+    const insertFnName = visibilityLevel === 'family_shared' ? 'insertSharedMemory' : 'insertPrivateMemory';
 
     // Log memory system status
     if (logger) {
@@ -252,7 +261,7 @@ function createMemoryWriter(options = {}) {
           memoryPool,
           { pilotInstanceId, userId, userRole },
           async (ctx) => {
-            return await ctx.insertPrivateMemory({
+            return await ctx[insertFnName]({
               content: fact.content,
               provenance: 'USER_STATED',
               memoryStatus: 'WORKING_ACTIVE'
@@ -351,6 +360,7 @@ function createMemoryWriter(options = {}) {
       logger.info('memory.writer.completed', {
         pilot_instance_id: pilotInstanceId,
         user_id: userId,
+        visibility_level: visibilityLevel,
         facts_extracted: facts.length,
         facts_qualified: qualifiedFacts.length,
         memories_stored: storedMemories.length,
@@ -364,7 +374,8 @@ function createMemoryWriter(options = {}) {
       extracted: facts.length,
       qualified: qualifiedFacts.length,
       promoted: promotionResult.promoted,
-      promotedFacts: promotionResult.facts
+      promotedFacts: promotionResult.facts,
+      visibilityLevel,
     };
   }
 

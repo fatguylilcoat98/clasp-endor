@@ -16,6 +16,11 @@
  *   POST /api/login         → Supabase login → resolve user → seal cookie
  *   POST /api/chat          → classify + actor.execute (real model)
  *   GET  /api/admin/recent  → ring buffer (admin only)
+ *   GET  /api/admin/memories→ read-only memory inspector (admin only;
+ *                             RLS-narrowed to whatever the admin can see)
+ *   GET  /api/circle/contacts        → list caller's circle
+ *   POST /api/circle/contacts        → add by email + visibility scope
+ *   POST /api/circle/contacts/scope  → update scope (or empty = revoke)
  *   POST /api/logout        → clear session cookie
  *
  * Hard rules:
@@ -190,6 +195,14 @@ function createTestDoorServer(options) {
   }
   if (!wiring || typeof wiring.handleChat !== 'function') {
     throw new Error('createTestDoorServer: wiring with handleChat is required');
+  }
+  if (typeof wiring.listMemoriesForInspector !== 'function') {
+    throw new Error('createTestDoorServer: wiring.listMemoriesForInspector is required');
+  }
+  if (typeof wiring.listCircleContacts !== 'function'
+      || typeof wiring.addCircleContact !== 'function'
+      || typeof wiring.setCircleContactPermissions !== 'function') {
+    throw new Error('createTestDoorServer: wiring must expose circle CRUD (list/add/setPermissions)');
   }
   if (!recent || typeof recent.record !== 'function') {
     throw new Error('createTestDoorServer: recent buffer is required');
@@ -403,6 +416,19 @@ function createTestDoorServer(options) {
       });
     }
 
+    // Phase 2: per-turn visibility hint. 'private' (default) or
+    // 'family_shared'. password_locked is explicitly rejected — it
+    // requires a vault unlock flow that is out of scope.
+    let visibilityHint = body.visibilityHint;
+    if (visibilityHint === undefined || visibilityHint === null || visibilityHint === '') {
+      visibilityHint = 'private';
+    }
+    if (visibilityHint !== 'private' && visibilityHint !== 'family_shared') {
+      return jsonResponse(res, 400, {
+        error: 'visibilityHint must be "private" or "family_shared"',
+      });
+    }
+
     let bundle;
     try {
       const companionConfig = {
@@ -416,6 +442,7 @@ function createTestDoorServer(options) {
         userRole: session.userRole,
         userMessage,
         companionConfig,
+        visibilityHint,
       });
     } catch (err) {
       const errorClass = describeErrClass(err);
@@ -479,6 +506,7 @@ function createTestDoorServer(options) {
       auditReason: bundle.auditReason,
       memoriesStored: bundle.memoriesStored,
       factsExtracted: bundle.factsExtracted,
+      visibilityLevel: bundle.visibilityLevel,
     });
   }
 
@@ -495,6 +523,138 @@ function createTestDoorServer(options) {
       size: recent.size(),
       entries: recent.list(),
     });
+  }
+
+  async function handleAdminMemories(req, res) {
+    const session = getSession(req);
+    if (!session) {
+      return jsonResponse(res, 401, { error: 'no session — sign in first' });
+    }
+    if (session.userRole !== 'admin') {
+      return jsonResponse(res, 403, { error: 'admin role required' });
+    }
+    let memories;
+    try {
+      memories = await wiring.listMemoriesForInspector({
+        pilotInstanceId,
+        userId: session.userId,
+        userRole: session.userRole,
+        limit: 100,
+      });
+    } catch (err) {
+      const errorClass = describeErrClass(err);
+      log('warn', 'web.admin.memories_failed', { error_class: errorClass });
+      return jsonResponse(res, 502, { error: 'failed to load memories', errorClass });
+    }
+    return jsonResponse(res, 200, {
+      count: memories.length,
+      memories,
+    });
+  }
+
+  // ---------- Phase 3: circle contacts ----------
+
+  function userClassToStatus(uc) {
+    if (uc === 'bad_request') return 400;
+    if (uc === 'not_found') return 404;
+    if (uc === 'unavailable') return 503;
+    return 502;
+  }
+
+  async function handleCircleList(req, res) {
+    const session = getSession(req);
+    if (!session) {
+      return jsonResponse(res, 401, { error: 'no session — sign in first' });
+    }
+    let contacts;
+    try {
+      contacts = await wiring.listCircleContacts({
+        pilotInstanceId,
+        userId: session.userId,
+        userRole: session.userRole,
+      });
+    } catch (err) {
+      const errorClass = describeErrClass(err);
+      log('warn', 'web.circle.list_failed', { error_class: errorClass });
+      return jsonResponse(res, userClassToStatus(err.userClass), {
+        error: err.userClass === 'unavailable' ? 'circle service unavailable' : 'failed to list contacts',
+        errorClass,
+      });
+    }
+    return jsonResponse(res, 200, { count: contacts.length, contacts });
+  }
+
+  async function handleCircleAdd(req, res) {
+    const session = getSession(req);
+    if (!session) {
+      return jsonResponse(res, 401, { error: 'no session — sign in first' });
+    }
+    const body = await parseJsonBody(req);
+    const email = typeof body.email === 'string' ? body.email.trim() : '';
+    const rawLevels = Array.isArray(body.visibilityLevels) ? body.visibilityLevels : [];
+    // Sanitize at the HTTP edge — only forward known-good tier
+    // strings. The repository will reject anything else.
+    const visibilityLevels = rawLevels.filter((v) => v === 'family_shared');
+    if (email === '') {
+      return jsonResponse(res, 400, { error: 'email is required' });
+    }
+    try {
+      const created = await wiring.addCircleContact({
+        pilotInstanceId,
+        userId: session.userId,
+        userRole: session.userRole,
+        email,
+        visibilityLevels,
+      });
+      return jsonResponse(res, 200, { ok: true, contact: created });
+    } catch (err) {
+      const errorClass = describeErrClass(err);
+      log('warn', 'web.circle.add_failed', { error_class: errorClass });
+      if (err.userClass === 'not_found') {
+        return jsonResponse(res, 404, { error: 'no user with that email in your pilot' });
+      }
+      if (err.userClass === 'bad_request') {
+        return jsonResponse(res, 400, { error: err.message || 'bad request' });
+      }
+      if (err.userClass === 'unavailable') {
+        return jsonResponse(res, 503, { error: 'circle service unavailable' });
+      }
+      return jsonResponse(res, 502, { error: 'failed to add contact', errorClass });
+    }
+  }
+
+  async function handleCircleSetScope(req, res) {
+    const session = getSession(req);
+    if (!session) {
+      return jsonResponse(res, 401, { error: 'no session — sign in first' });
+    }
+    const body = await parseJsonBody(req);
+    const id = typeof body.id === 'string' ? body.id : '';
+    const rawLevels = Array.isArray(body.visibilityLevels) ? body.visibilityLevels : [];
+    const visibilityLevels = rawLevels.filter((v) => v === 'family_shared');
+    if (id === '') {
+      return jsonResponse(res, 400, { error: 'id is required' });
+    }
+    try {
+      const updated = await wiring.setCircleContactPermissions({
+        pilotInstanceId,
+        userId: session.userId,
+        userRole: session.userRole,
+        id,
+        visibilityLevels,
+      });
+      return jsonResponse(res, 200, { ok: true, contact: updated });
+    } catch (err) {
+      const errorClass = describeErrClass(err);
+      log('warn', 'web.circle.set_scope_failed', { error_class: errorClass });
+      if (err.userClass === 'bad_request') {
+        return jsonResponse(res, 400, { error: err.message || 'bad request' });
+      }
+      if (err.userClass === 'unavailable') {
+        return jsonResponse(res, 503, { error: 'circle service unavailable' });
+      }
+      return jsonResponse(res, 502, { error: 'failed to update contact', errorClass });
+    }
   }
 
   function handleLogout(req, res) {
@@ -538,6 +698,10 @@ function createTestDoorServer(options) {
     if (method === 'POST' && pathname === '/api/login')  return handleLogin(req, res);
     if (method === 'POST' && pathname === '/api/chat')   return handleChat(req, res);
     if (method === 'GET'  && pathname === '/api/admin/recent') return handleAdminRecent(req, res);
+    if (method === 'GET'  && pathname === '/api/admin/memories') return handleAdminMemories(req, res);
+    if (method === 'GET'  && pathname === '/api/circle/contacts') return handleCircleList(req, res);
+    if (method === 'POST' && pathname === '/api/circle/contacts') return handleCircleAdd(req, res);
+    if (method === 'POST' && pathname === '/api/circle/contacts/scope') return handleCircleSetScope(req, res);
     if (method === 'POST' && pathname === '/api/logout') return handleLogout(req, res);
 
     return jsonResponse(res, 404, { error: 'not found' });

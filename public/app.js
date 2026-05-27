@@ -40,6 +40,21 @@
     adminRefresh:     document.getElementById('admin-refresh'),
     adminMeta:        document.getElementById('admin-meta'),
     adminTbody:       document.getElementById('admin-tbody'),
+
+    inspectorRefresh: document.getElementById('memory-inspector-refresh'),
+    inspectorMeta:    document.getElementById('memory-inspector-meta'),
+    inspectorTbody:   document.getElementById('memory-inspector-tbody'),
+
+    circleCard:       document.getElementById('circle-card'),
+    circleAddForm:    document.getElementById('circle-add-form'),
+    circleAddEmail:   document.getElementById('circle-add-email'),
+    circleAddFamily:  document.getElementById('circle-add-family-shared'),
+    circleAddSubmit:  document.getElementById('circle-add-submit'),
+    circleAddError:   document.getElementById('circle-add-error'),
+    circleAddOk:      document.getElementById('circle-add-ok'),
+    circleRefresh:    document.getElementById('circle-refresh'),
+    circleMeta:       document.getElementById('circle-meta'),
+    circleTbody:      document.getElementById('circle-tbody'),
   };
 
   function setText(node, text) { node.textContent = text; }
@@ -95,9 +110,13 @@
     if (isAdminRole(authResponse.userRole)) {
       el.adminCard.hidden = false;
       refreshAdmin();
+      refreshMemoryInspector();
     } else {
       el.adminCard.hidden = true;
     }
+    // Circle management is available to every signed-in user, not
+    // just admins. Default-deny remains intact at the substrate.
+    refreshCircle();
     el.messageInput.focus();
   }
 
@@ -212,6 +231,9 @@
       appendKv(dl, 'memoriesStored', String(g.memoriesStored || 0));
       appendKv(dl, 'factsExtracted', String(g.factsExtracted || 0));
     }
+    if (g.visibilityLevel) {
+      appendKv(dl, 'visibilityLevel', String(g.visibilityLevel));
+    }
     details.appendChild(dl);
     return details;
   }
@@ -225,17 +247,23 @@
     dl.appendChild(dd);
   }
 
+  function readVisibilityHint() {
+    const checked = document.querySelector('input[name="visibility"]:checked');
+    return checked ? checked.value : 'private';
+  }
+
   async function onChatSubmit(event) {
     event.preventDefault();
     clearError(el.chatError);
     const message = el.messageInput.value.trim();
     if (!message) return;
+    const visibilityHint = readVisibilityHint();
     el.chatSubmit.disabled = true;
     el.loading.hidden = false;
     renderUserMessage(message);
     el.messageInput.value = '';
     try {
-      const r = await postJson('/api/chat', { message });
+      const r = await postJson('/api/chat', { message, visibilityHint });
       if (!r.ok) {
         if (r.status === 401) {
           // Session lapsed — kick back to login.
@@ -253,7 +281,7 @@
           intentType: null,
           memoryCount: null,
         });
-        if (!el.adminCard.hidden) refreshAdmin();
+        if (!el.adminCard.hidden) { refreshAdmin(); refreshMemoryInspector(); }
         return;
       }
       const b = r.body;
@@ -268,8 +296,9 @@
         auditReason: b.auditReason,
         memoriesStored: b.memoriesStored,
         factsExtracted: b.factsExtracted,
+        visibilityLevel: b.visibilityLevel,
       });
-      if (!el.adminCard.hidden) refreshAdmin();
+      if (!el.adminCard.hidden) { refreshAdmin(); refreshMemoryInspector(); }
     } catch (err) {
       showError(el.chatError, 'Network error. The companion did not respond.');
     } finally {
@@ -311,9 +340,123 @@
     return node;
   }
 
+  async function refreshMemoryInspector() {
+    try {
+      const r = await getJson('/api/admin/memories');
+      if (!r.ok) {
+        el.inspectorMeta.textContent = 'Failed to load (' + r.status + ').';
+        return;
+      }
+      const memories = (r.body && r.body.memories) || [];
+      el.inspectorMeta.textContent = memories.length + ' rows (RLS-narrowed)';
+      el.inspectorTbody.innerHTML = '';
+      for (const m of memories) {
+        const tr = document.createElement('tr');
+        tr.appendChild(td(m.created_at ? new Date(m.created_at).toLocaleString() : ''));
+        tr.appendChild(td(m.owning_user_id ? m.owning_user_id.slice(0, 8) + '…' : ''));
+        const visTd = document.createElement('td');
+        visTd.textContent = m.visibility_level || '';
+        if (m.visibility_level) visTd.className = 'vis-' + m.visibility_level;
+        tr.appendChild(visTd);
+        tr.appendChild(td(m.memory_status));
+        tr.appendChild(td(m.authority_level));
+        tr.appendChild(td(m.provenance));
+        const contentTd = document.createElement('td');
+        contentTd.className = 'content-cell';
+        contentTd.textContent = m.content == null ? '' : String(m.content);
+        tr.appendChild(contentTd);
+        el.inspectorTbody.appendChild(tr);
+      }
+    } catch (err) {
+      el.inspectorMeta.textContent = 'Network error loading inspector.';
+    }
+  }
+
   async function onLogout() {
     try { await postJson('/api/logout', {}); } catch (e) { /* swallow */ }
     window.location.reload();
+  }
+
+  // ---------- Phase 3: circle contacts ----------
+
+  async function refreshCircle() {
+    try {
+      const r = await getJson('/api/circle/contacts');
+      if (!r.ok) {
+        el.circleMeta.textContent = 'Failed to load (' + r.status + ').';
+        return;
+      }
+      const contacts = (r.body && r.body.contacts) || [];
+      el.circleMeta.textContent = contacts.length + ' contact(s)';
+      el.circleTbody.innerHTML = '';
+      for (const c of contacts) {
+        const tr = document.createElement('tr');
+        tr.appendChild(td(c.contactUsername));
+        tr.appendChild(td(c.contactRole));
+        const hasFamily = c.visibilityLevels && c.visibilityLevels.includes('family_shared');
+        const grantTd = document.createElement('td');
+        grantTd.textContent = hasFamily ? 'granted' : 'denied';
+        grantTd.className = hasFamily ? 'vis-family_shared' : 'vis-private';
+        tr.appendChild(grantTd);
+        tr.appendChild(td(c.createdAt ? new Date(c.createdAt).toLocaleString() : ''));
+
+        const actionTd = document.createElement('td');
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'circle-action-button';
+        btn.textContent = hasFamily ? 'Revoke family_shared' : 'Grant family_shared';
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          try {
+            await postJson('/api/circle/contacts/scope', {
+              id: c.id,
+              visibilityLevels: hasFamily ? [] : ['family_shared'],
+            });
+            await refreshCircle();
+          } catch (err) {
+            // Best-effort; on failure leave the row alone and let the
+            // user retry. No silent state change.
+            btn.disabled = false;
+          }
+        });
+        actionTd.appendChild(btn);
+        tr.appendChild(actionTd);
+
+        el.circleTbody.appendChild(tr);
+      }
+    } catch (err) {
+      el.circleMeta.textContent = 'Network error loading circle.';
+    }
+  }
+
+  async function onCircleAddSubmit(event) {
+    event.preventDefault();
+    clearError(el.circleAddError);
+    el.circleAddOk.hidden = true;
+    const email = el.circleAddEmail.value.trim();
+    if (!email) {
+      showError(el.circleAddError, 'Email is required.');
+      return;
+    }
+    const visibilityLevels = el.circleAddFamily.checked ? ['family_shared'] : [];
+    el.circleAddSubmit.disabled = true;
+    try {
+      const r = await postJson('/api/circle/contacts', { email, visibilityLevels });
+      if (!r.ok) {
+        showError(el.circleAddError,
+          (r.body && r.body.error) || ('Add failed (' + r.status + ').'));
+        return;
+      }
+      el.circleAddEmail.value = '';
+      el.circleAddFamily.checked = false;
+      el.circleAddOk.textContent = 'Contact added.';
+      el.circleAddOk.hidden = false;
+      await refreshCircle();
+    } catch (err) {
+      showError(el.circleAddError, 'Network error.');
+    } finally {
+      el.circleAddSubmit.disabled = false;
+    }
   }
 
   // Wire events
@@ -323,6 +466,9 @@
   el.showLogin.addEventListener('click', showLoginCard);
   el.chatForm.addEventListener('submit', onChatSubmit);
   el.adminRefresh.addEventListener('click', refreshAdmin);
+  if (el.inspectorRefresh) el.inspectorRefresh.addEventListener('click', refreshMemoryInspector);
+  if (el.circleRefresh) el.circleRefresh.addEventListener('click', refreshCircle);
+  if (el.circleAddForm) el.circleAddForm.addEventListener('submit', onCircleAddSubmit);
   el.logoutButton.addEventListener('click', onLogout);
   el.messageInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {

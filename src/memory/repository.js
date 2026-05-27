@@ -126,12 +126,39 @@ async function listVisibleMemories(client, sessionCtx, options) {
 }
 
 async function insertPrivateMemory(client, sessionCtx, input) {
+  return insertMemoryAtVisibility(client, sessionCtx, input, 'private');
+}
+
+// Phase 2: shared-memory writer. Same shape as insertPrivateMemory,
+// except visibility_level='family_shared'. vault_id stays NULL —
+// the password_locked tier is gated to a later GM (vault unlock /
+// PIN flow). admissibility_state stays 'admissible'; admissibility
+// transitions are also out of scope here.
+//
+// Whose memory rows the contact actually SEES is determined by RLS
+// (memory_store_family_shared policy) — the writer doesn't filter
+// downstream, it only sets the tier flag. The contact must ALSO be
+// in circle_contacts with 'family_shared' in permission_scope.
+async function insertSharedMemory(client, sessionCtx, input) {
+  return insertMemoryAtVisibility(client, sessionCtx, input, 'family_shared');
+}
+
+const VALID_INSERT_VISIBILITY = new Set(['private', 'family_shared']);
+
+async function insertMemoryAtVisibility(client, sessionCtx, input, visibilityLevel) {
+  if (!VALID_INSERT_VISIBILITY.has(visibilityLevel)) {
+    // password_locked is forbidden here — it requires a vault_id and
+    // a vault-unlock flow that this milestone does NOT implement.
+    throw new Error(
+      `insertMemoryAtVisibility: visibilityLevel must be one of ${Array.from(VALID_INSERT_VISIBILITY).join(', ')}`
+    );
+  }
   if (!input || typeof input !== 'object') {
-    throw new Error('insertPrivateMemory: input is required');
+    throw new Error('insertMemoryAtVisibility: input is required');
   }
   const { content, provenance, memoryStatus } = input;
   if (typeof content !== 'string' || content.trim() === '') {
-    throw new Error('insertPrivateMemory: content must be a non-empty string');
+    throw new Error('insertMemoryAtVisibility: content must be a non-empty string');
   }
   // Length check is in UTF-8 bytes (not JS code units) so the cap is
   // independent of the script's encoding. The error message reports
@@ -139,28 +166,28 @@ async function insertPrivateMemory(client, sessionCtx, input) {
   const contentBytes = Buffer.byteLength(content, 'utf8');
   if (contentBytes > MAX_CONTENT_LENGTH) {
     throw new Error(
-      `insertPrivateMemory: content exceeds maximum length (${contentBytes} > ${MAX_CONTENT_LENGTH} bytes)`
+      `insertMemoryAtVisibility: content exceeds maximum length (${contentBytes} > ${MAX_CONTENT_LENGTH} bytes)`
     );
   }
   if (!VALID_PROVENANCE.has(provenance)) {
     throw new Error(
-      `insertPrivateMemory: provenance must be one of ${Array.from(VALID_PROVENANCE).join(', ')}`
+      `insertMemoryAtVisibility: provenance must be one of ${Array.from(VALID_PROVENANCE).join(', ')}`
     );
   }
 
   const status = memoryStatus || 'WORKING_ACTIVE';
   if (!VALID_MEMORY_STATUS.has(status)) {
     throw new Error(
-      `insertPrivateMemory: memoryStatus must be one of ${Array.from(VALID_MEMORY_STATUS).join(', ')}`
+      `insertMemoryAtVisibility: memoryStatus must be one of ${Array.from(VALID_MEMORY_STATUS).join(', ')}`
     );
   }
 
   const inserted = await client.query(
     'INSERT INTO memory_store '
       + '(pilot_instance_id, owning_user_id, content, provenance, visibility_level, admissibility_state, memory_status) '
-      + "VALUES ($1, $2, $3, $4, 'private', 'admissible', $5) "
+      + "VALUES ($1, $2, $3, $4, $5, 'admissible', $6) "
       + 'RETURNING id, created_at',
-    [sessionCtx.pilotInstanceId, sessionCtx.userId, content, provenance, status]
+    [sessionCtx.pilotInstanceId, sessionCtx.userId, content, provenance, visibilityLevel, status]
   );
 
   const memoryId = inserted.rows[0].id;
@@ -290,11 +317,13 @@ async function deactivateMemory(client, sessionCtx, memoryId, reason) {
 module.exports = {
   listVisibleMemories,
   insertPrivateMemory,
+  insertSharedMemory,
   promoteMemoryToVerified,
   findWorkingMemoriesByContent,
   findActiveMemoriesContaining,
   deactivateMemory,
   computeAuthority,
   VALID_PROVENANCE,
+  VALID_INSERT_VISIBILITY,
   MAX_CONTENT_LENGTH,
 };
