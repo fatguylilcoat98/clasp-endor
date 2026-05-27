@@ -41,6 +41,24 @@ function normalizeEmail(raw) {
   return EMAIL_RE.test(trimmed) ? trimmed : null;
 }
 
+// Mask an email for diagnostic logs. Preserves the leading 1 char of
+// the local part, the leading 1 char of the domain, and the TLD so
+// "stangman_98@yahoo.com" → "s***@y***.com" — enough to distinguish
+// distinct accounts in a log line, not enough to identify the user.
+// Returns null for non-string / non-email input.
+function maskEmail(raw) {
+  if (typeof raw !== 'string') return null;
+  const at = raw.indexOf('@');
+  if (at < 1 || at === raw.length - 1) return null;
+  const local = raw.slice(0, at);
+  const domain = raw.slice(at + 1);
+  const dot = domain.lastIndexOf('.');
+  const head = local[0];
+  if (dot < 1) return `${head}***@${domain[0]}***`;
+  const tld = domain.slice(dot);
+  return `${head}***@${domain[0]}***${tld}`;
+}
+
 function bootstrapAdminEmailsFromEnv(rawList) {
   if (typeof rawList !== 'string') return new Set();
   const out = new Set();
@@ -211,4 +229,5 @@ module.exports = {
   createIdentityResolver,
   bootstrapAdminEmailsFromEnv,
   normalizeEmail,
+  maskEmail,
 };

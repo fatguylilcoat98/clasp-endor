@@ -196,3 +196,45 @@ test('email lookup is scoped by pilot_instance_id', async () => {
   const ourRow = pool._rows.find((r) => r.pilot_instance_id === PILOT);
   assert.equal(ourRow.auth_user_id, AUTH_USER_A);
 });
+
+// ---------- maskEmail ----------
+
+test('maskEmail: produces a short masked form preserving head + TLD', () => {
+  const { maskEmail } = require('../../src/web/identity');
+  assert.equal(maskEmail('stangman_98@yahoo.com'), 's***@y***.com');
+  assert.equal(maskEmail('stangman9898@gmail.com'), 's***@g***.com');
+  // Same head/TLD combinations from very different emails still produce
+  // the same mask — that's intentional. The mask is for distinguishing
+  // accounts in a log line, not for identifying the user.
+  assert.equal(maskEmail('alice@example.org'), 'a***@e***.org');
+  assert.equal(maskEmail('andy@elsewhere.org'), 'a***@e***.org');
+});
+
+test('maskEmail: handles co.uk and other multi-segment TLDs', () => {
+  const { maskEmail } = require('../../src/web/identity');
+  // The mask keeps the LAST .segment as the TLD slice.
+  assert.equal(maskEmail('chris@royal.co.uk'), 'c***@r***.uk');
+});
+
+test('maskEmail: returns null for invalid / non-string / no-@ input', () => {
+  const { maskEmail } = require('../../src/web/identity');
+  assert.equal(maskEmail(null), null);
+  assert.equal(maskEmail(undefined), null);
+  assert.equal(maskEmail(''), null);
+  assert.equal(maskEmail('not-an-email'), null);
+  assert.equal(maskEmail('@example.com'), null);
+  assert.equal(maskEmail('x@'), null);
+  assert.equal(maskEmail(42), null);
+});
+
+test('maskEmail: never echoes the original local-part or username body', () => {
+  const { maskEmail } = require('../../src/web/identity');
+  const original = 'verylongusername98765@yahoo.com';
+  const masked = maskEmail(original);
+  assert.ok(!masked.includes('verylongusername'),
+    'mask must not leak the full local-part');
+  assert.ok(!masked.includes('98765'),
+    'mask must not leak digits from the local-part');
+  assert.ok(!masked.includes('yahoo'),
+    'mask must not leak the domain body');
+});

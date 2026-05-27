@@ -20,6 +20,12 @@
  *                             RLS-narrowed to whatever the admin can see)
  *   GET  /api/admin/governance-events → recent governance_audit_log
  *                             rows (admin only; RLS-narrowed)
+ *   GET  /api/_debug/identity → per-session identity + memory metadata
+ *                             snapshot. 404 unless LYLO_DEBUG_IDENTITY=
+ *                             true. Returns NO memory content — only
+ *                             owning_user_id prefixes + tiers — so the
+ *                             operator can confirm session isolation
+ *                             without leaking memory text.
  *   GET  /api/circle/contacts        → list caller's circle
  *   POST /api/circle/contacts        → add by email + visibility scope
  *   POST /api/circle/contacts/scope  → update scope (or empty = revoke)
@@ -51,7 +57,7 @@ const {
 } = require('./session');
 const { describeErrClass } = require('./wiring');
 const { verifySupabaseJwt } = require('./jwt-verify');
-const { normalizeEmail } = require('./identity');
+const { normalizeEmail, maskEmail } = require('./identity');
 
 // LYLO_DEBUG_IDENTITY=true turns on a layered identity diagnostic
 // trace. Each chat turn emits a sequence of structured log events
@@ -345,7 +351,14 @@ function createTestDoorServer(options) {
     debugIdentity(log, 'auth.resolved', {
       pilot_instance_id: pilotInstanceId,
       event_type: eventType,
-      auth_user_id_prefix: typeof authUserId === 'string' ? authUserId.slice(0, 8) : null,
+      // Full auth_user_id is metadata (Supabase auth.users.id), not a
+      // secret. Logged in full so the operator can spot duplicates
+      // across two account login traces.
+      auth_user_id: typeof authUserId === 'string' ? authUserId : null,
+      // Masked email — distinguishes accounts in log lines without
+      // exposing the full address. Two distinct emails produce two
+      // distinct masked forms (different head/tld combinations).
+      email_masked: maskEmail(email),
       resolved_user_id: resolved.userId,
       resolved_role: resolved.userRole,
       resolved_display_name_length: typeof resolved.displayName === 'string' ? resolved.displayName.length : 0,
@@ -670,6 +683,89 @@ function createTestDoorServer(options) {
     });
   }
 
+  // ---------- Debug: per-session identity inspection ----------
+  //
+  // GET /api/_debug/identity returns the current session's identity
+  // resolution + a content-free memory snapshot. Off unless
+  // LYLO_DEBUG_IDENTITY=true. Designed for the cross-account leak
+  // workflow:
+  //   1. Sign in as account A in browser A. GET /api/_debug/identity.
+  //   2. Sign in as account B in browser B. GET /api/_debug/identity.
+  //   3. Compare:
+  //      - sessionUserId must differ.
+  //      - sessionDisplayName / sessionCompanionLabel may or may not
+  //        differ — operator inspects.
+  //      - visibleMemories[].owningUserIdPrefix should equal
+  //        sessionUserId's prefix for every row that the user owns;
+  //        rows with a DIFFERENT owningUserIdPrefix are family_shared
+  //        memories the session has been granted access to (via
+  //        circle_contacts). If account B sees rows owned by
+  //        account A WITHOUT a circle membership, that's an RLS bug.
+  // No memory content is returned. Only ids (8-char prefixes),
+  // owning_user_id prefixes, visibility, authority, status, active.
+  async function handleDebugIdentity(req, res) {
+    if (!DEBUG_IDENTITY) {
+      return jsonResponse(res, 404, { error: 'not found' });
+    }
+    const session = getSession(req);
+    if (!session) {
+      return jsonResponse(res, 401, { error: 'no session — sign in first' });
+    }
+    let memories;
+    try {
+      memories = await wiring.listMemoriesForInspector({
+        pilotInstanceId,
+        userId: session.userId,
+        userRole: session.userRole,
+        limit: 20,
+      });
+    } catch (err) {
+      const errorClass = describeErrClass(err);
+      log('warn', 'identity_debug.snapshot_failed', {
+        pilot_instance_id: pilotInstanceId,
+        session_user_id: session.userId,
+        error_class: errorClass,
+      });
+      return jsonResponse(res, 502, { error: 'debug snapshot failed', errorClass });
+    }
+    const ownerSet = new Set();
+    const visibleMemories = memories.map((m) => {
+      if (typeof m.owning_user_id === 'string') ownerSet.add(m.owning_user_id);
+      return {
+        idPrefix: typeof m.id === 'string' ? m.id.slice(0, 8) : null,
+        owningUserIdPrefix: typeof m.owning_user_id === 'string'
+          ? m.owning_user_id.slice(0, 8) : null,
+        visibilityLevel: m.visibility_level,
+        authorityLevel: m.authority_level,
+        memoryStatus: m.memory_status,
+        active: m.active,
+        createdAt: m.created_at,
+      };
+    });
+    log('info', 'identity_debug.snapshot', {
+      pilot_instance_id: pilotInstanceId,
+      session_user_id: session.userId,
+      session_user_role: session.userRole,
+      session_display_name_length: typeof session.displayName === 'string' ? session.displayName.length : 0,
+      session_companion_label_value: session.companionLabel,
+      session_issued_at: session.issuedAt,
+      memory_count: visibleMemories.length,
+      distinct_owner_count: ownerSet.size,
+      owner_user_id_prefixes: Array.from(ownerSet).map((id) => id.slice(0, 8)),
+    });
+    return jsonResponse(res, 200, {
+      pilotInstanceId,
+      sessionUserId: session.userId,
+      sessionUserRole: session.userRole,
+      sessionDisplayNameLength: typeof session.displayName === 'string' ? session.displayName.length : 0,
+      sessionCompanionLabel: session.companionLabel,
+      sessionIssuedAt: session.issuedAt,
+      memoryCount: visibleMemories.length,
+      distinctOwnerCount: ownerSet.size,
+      visibleMemories,
+    });
+  }
+
   // ---------- Phase 3: circle contacts ----------
 
   function userClassToStatus(uc) {
@@ -818,6 +914,7 @@ function createTestDoorServer(options) {
     if (method === 'GET'  && pathname === '/api/admin/recent') return handleAdminRecent(req, res);
     if (method === 'GET'  && pathname === '/api/admin/memories') return handleAdminMemories(req, res);
     if (method === 'GET'  && pathname === '/api/admin/governance-events') return handleAdminGovernanceEvents(req, res);
+    if (method === 'GET'  && pathname === '/api/_debug/identity') return handleDebugIdentity(req, res);
     if (method === 'GET'  && pathname === '/api/circle/contacts') return handleCircleList(req, res);
     if (method === 'POST' && pathname === '/api/circle/contacts') return handleCircleAdd(req, res);
     if (method === 'POST' && pathname === '/api/circle/contacts/scope') return handleCircleSetScope(req, res);
