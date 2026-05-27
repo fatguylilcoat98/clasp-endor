@@ -535,3 +535,41 @@ test('memory-governance (GM-18): pg-shaped errors from the repository path are w
   // The orphan UUID must not appear in the wrapped error message.
   assert.equal(caught.message.includes(orphanUserId), false);
 });
+
+// ---------- getBoundSessionVars — proves the DB binding ----------
+
+test('memory-governance: ctx.getBoundSessionVars returns the EXACT app.* values bound by withMemoryContext', async () => {
+  // The load-bearing claim of the whole RLS posture is that the
+  // session vars the caller passes to withMemoryContext are the
+  // session vars the database sees inside the transaction. The
+  // /api/_debug/identity endpoint relies on this; this test pins
+  // the contract.
+  const result = await withMemoryContext(
+    appPool,
+    { pilotInstanceId: PILOT_A, userId: SENIOR_A, userRole: 'senior' },
+    (ctx) => ctx.getBoundSessionVars()
+  );
+  assert.equal(result.boundPilotInstanceId, PILOT_A);
+  assert.equal(result.boundUserId, SENIOR_A);
+  assert.equal(result.boundUserRole, 'senior');
+});
+
+test('memory-governance: getBoundSessionVars in nested withMemoryContext blocks does NOT leak prior session vars', async () => {
+  // Two consecutive withMemoryContext blocks must see independent
+  // bindings. set_config(..., is_local=true) reverts at COMMIT;
+  // confirm there's no carryover at the pool-connection level.
+  const first = await withMemoryContext(
+    appPool,
+    { pilotInstanceId: PILOT_A, userId: SENIOR_A, userRole: 'senior' },
+    (ctx) => ctx.getBoundSessionVars()
+  );
+  const second = await withMemoryContext(
+    appPool,
+    { pilotInstanceId: PILOT_A, userId: FAMILY_A, userRole: 'family' },
+    (ctx) => ctx.getBoundSessionVars()
+  );
+  assert.equal(first.boundUserId, SENIOR_A);
+  assert.equal(second.boundUserId, FAMILY_A);
+  assert.notEqual(first.boundUserId, second.boundUserId);
+  assert.notEqual(first.boundUserRole, second.boundUserRole);
+});

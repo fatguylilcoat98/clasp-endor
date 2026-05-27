@@ -711,9 +711,9 @@ function createTestDoorServer(options) {
     if (!session) {
       return jsonResponse(res, 401, { error: 'no session — sign in first' });
     }
-    let memories;
+    let snapshot;
     try {
-      memories = await wiring.listMemoriesForInspector({
+      snapshot = await wiring.getDebugSessionSnapshot({
         pilotInstanceId,
         userId: session.userId,
         userRole: session.userRole,
@@ -728,20 +728,6 @@ function createTestDoorServer(options) {
       });
       return jsonResponse(res, 502, { error: 'debug snapshot failed', errorClass });
     }
-    const ownerSet = new Set();
-    const visibleMemories = memories.map((m) => {
-      if (typeof m.owning_user_id === 'string') ownerSet.add(m.owning_user_id);
-      return {
-        idPrefix: typeof m.id === 'string' ? m.id.slice(0, 8) : null,
-        owningUserIdPrefix: typeof m.owning_user_id === 'string'
-          ? m.owning_user_id.slice(0, 8) : null,
-        visibilityLevel: m.visibility_level,
-        authorityLevel: m.authority_level,
-        memoryStatus: m.memory_status,
-        active: m.active,
-        createdAt: m.created_at,
-      };
-    });
     log('info', 'identity_debug.snapshot', {
       pilot_instance_id: pilotInstanceId,
       session_user_id: session.userId,
@@ -749,9 +735,14 @@ function createTestDoorServer(options) {
       session_display_name_length: typeof session.displayName === 'string' ? session.displayName.length : 0,
       session_companion_label_value: session.companionLabel,
       session_issued_at: session.issuedAt,
-      memory_count: visibleMemories.length,
-      distinct_owner_count: ownerSet.size,
-      owner_user_id_prefixes: Array.from(ownerSet).map((id) => id.slice(0, 8)),
+      bound_user_id: snapshot.boundUserId,
+      bound_user_role: snapshot.boundUserRole,
+      binding_matches: snapshot.bindingMatches,
+      memory_count: snapshot.memoryCount,
+      distinct_owner_count: snapshot.distinctOwnerCount,
+      owner_user_id_prefixes: snapshot.ownerUserIdPrefixes,
+      any_mentions_favorite_food: snapshot.anyMentionsFavoriteFood,
+      any_mentions_sushi: snapshot.anyMentionsSushi,
     });
     return jsonResponse(res, 200, {
       pilotInstanceId,
@@ -760,9 +751,24 @@ function createTestDoorServer(options) {
       sessionDisplayNameLength: typeof session.displayName === 'string' ? session.displayName.length : 0,
       sessionCompanionLabel: session.companionLabel,
       sessionIssuedAt: session.issuedAt,
-      memoryCount: visibleMemories.length,
-      distinctOwnerCount: ownerSet.size,
-      visibleMemories,
+      // Bound session vars — proves what the database actually
+      // received via set_config(). If bindingMatches is false, the
+      // whole RLS posture is suspect.
+      boundPilotInstanceId: snapshot.boundPilotInstanceId,
+      boundUserId: snapshot.boundUserId,
+      boundUserRole: snapshot.boundUserRole,
+      bindingMatches: snapshot.bindingMatches,
+      memoryCount: snapshot.memoryCount,
+      distinctOwnerCount: snapshot.distinctOwnerCount,
+      // The smoking-gun flag: does THIS session's visible memory
+      // set contain a sushi mention? Yes/no. Compare across two
+      // browser sessions; if one is true and the other is false
+      // with distinct boundUserIds, each user has their own copy
+      // (hypothesis H2). If both are true with the SAME bound
+      // user id, identity collapsed.
+      anyMentionsFavoriteFood: snapshot.anyMentionsFavoriteFood,
+      anyMentionsSushi: snapshot.anyMentionsSushi,
+      visibleMemories: snapshot.visibleMemories,
     });
   }
 

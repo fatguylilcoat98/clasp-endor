@@ -78,6 +78,27 @@ function buildCtx(client, sessionCtx) {
     findWorkingMemoriesByContent: (contentArray) => findWorkingMemoriesByContent(client, sessionCtx, contentArray),
     findActiveMemoriesContaining: (searchText) => findActiveMemoriesContaining(client, sessionCtx, searchText),
     deactivateMemory: (memoryId, reason) => deactivateMemory(client, sessionCtx, memoryId, reason),
+    // Diagnostic read-only — surfaces the session vars actually
+    // bound on THIS pg connection inside the transaction, so a
+    // caller can prove that withMemoryContext bound the values it
+    // claimed to bind. No table reads; just current_setting()
+    // calls, so the memory-boundary check (which scans FROM/JOIN
+    // for allowlisted tables) is unaffected. Used by the debug
+    // identity snapshot endpoint; never exposed to chat callers.
+    getBoundSessionVars: async () => {
+      const r = await client.query(
+        'SELECT '
+          + "current_setting('app.pilot_instance_id', true) AS bound_pilot_instance_id, "
+          + "current_setting('app.user_id', true) AS bound_user_id, "
+          + "current_setting('app.user_role', true) AS bound_user_role"
+      );
+      const row = r.rows[0] || {};
+      return {
+        boundPilotInstanceId: row.bound_pilot_instance_id || null,
+        boundUserId: row.bound_user_id || null,
+        boundUserRole: row.bound_user_role || null,
+      };
+    },
   };
 }
 

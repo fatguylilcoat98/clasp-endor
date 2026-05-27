@@ -591,6 +591,11 @@ test('chat with visibilityHint=family_shared: wiring receives the hint, response
       };
     },
     listMemoriesForInspector: async () => [],
+    getDebugSessionSnapshot: async () => ({
+      sessionUserId: 'stub', boundUserId: 'stub', bindingMatches: true,
+      memoryCount: 0, distinctOwnerCount: 0, ownerUserIdPrefixes: [],
+      anyMentionsFavoriteFood: false, anyMentionsSushi: false, visibleMemories: [],
+    }),
     listGovernanceEvents: async () => [],
     listCircleContacts: async () => [],
     addCircleContact: async () => ({ id: 'x', contactUserId: 'y', visibilityLevels: [], createdAt: '' }),
@@ -649,6 +654,11 @@ test('chat with no visibilityHint: defaults to "private"', async () => {
       };
     },
     listMemoriesForInspector: async () => [],
+    getDebugSessionSnapshot: async () => ({
+      sessionUserId: 'stub', boundUserId: 'stub', bindingMatches: true,
+      memoryCount: 0, distinctOwnerCount: 0, ownerUserIdPrefixes: [],
+      anyMentionsFavoriteFood: false, anyMentionsSushi: false, visibleMemories: [],
+    }),
     listGovernanceEvents: async () => [],
     listCircleContacts: async () => [],
     addCircleContact: async () => ({ id: 'x', contactUserId: 'y', visibilityLevels: [], createdAt: '' }),

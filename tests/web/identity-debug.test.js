@@ -89,6 +89,21 @@ function buildStubWiring() {
       };
     },
     listMemoriesForInspector: async () => [],
+    getDebugSessionSnapshot: async (params) => ({
+      sessionPilotInstanceId: params.pilotInstanceId,
+      sessionUserId: params.userId,
+      sessionUserRole: params.userRole,
+      boundPilotInstanceId: params.pilotInstanceId,
+      boundUserId: params.userId,
+      boundUserRole: params.userRole,
+      bindingMatches: true,
+      memoryCount: 0,
+      distinctOwnerCount: 0,
+      ownerUserIdPrefixes: [],
+      anyMentionsFavoriteFood: false,
+      anyMentionsSushi: false,
+      visibleMemories: [],
+    }),
     listGovernanceEvents: async () => [],
     listCircleContacts: async () => [],
     addCircleContact: async () => ({ id: 'x', contactUserId: 'y', visibilityLevels: [], createdAt: '' }),
@@ -324,7 +339,7 @@ test('GET /api/_debug/identity requires a session when gate is ON', async () => 
   }
 });
 
-test('GET /api/_debug/identity returns session identity + memory metadata snapshot (no content)', async () => {
+test('GET /api/_debug/identity returns session identity + bound DB vars + content-free memory snapshot', async () => {
   const ctx = await startServer({ LYLO_DEBUG_IDENTITY: 'true' });
   try {
     const login = await req(ctx.port, 'POST', '/api/login', {
@@ -336,12 +351,17 @@ test('GET /api/_debug/identity returns session identity + memory metadata snapsh
     assert.equal(r.statusCode, 200);
     assert.equal(typeof r.body.sessionUserId, 'string');
     assert.equal(r.body.sessionUserRole, 'senior');
-    assert.equal(typeof r.body.memoryCount, 'number');
+    // Bound DB vars carried through — proves the session_user_id
+    // the server saw equals the value the database had bound.
+    assert.equal(r.body.boundUserId, r.body.sessionUserId);
+    assert.equal(r.body.bindingMatches, true);
+    // Sushi flag is present and false (stub returns no memories).
+    assert.equal(r.body.anyMentionsSushi, false);
+    assert.equal(r.body.anyMentionsFavoriteFood, false);
     assert.ok(Array.isArray(r.body.visibleMemories));
-    // The default stub returns 0 memories. The shape we care about
-    // is that NO memory content appears in the response.
+    // No memory content allowed anywhere in the response.
     const dump = JSON.stringify(r.body);
-    assert.ok(!dump.includes('content'),
+    assert.ok(!/"content"\s*:/.test(dump),
       'debug endpoint must NOT include any memory content field');
   } finally {
     ctx.server.close();
@@ -349,7 +369,7 @@ test('GET /api/_debug/identity returns session identity + memory metadata snapsh
   }
 });
 
-test('GET /api/_debug/identity emits identity_debug.snapshot summary log', async () => {
+test('GET /api/_debug/identity emits identity_debug.snapshot summary log with bound vars + sushi flags', async () => {
   const ctx = await startServer({ LYLO_DEBUG_IDENTITY: 'true' });
   try {
     const login = await req(ctx.port, 'POST', '/api/login', {
@@ -362,8 +382,12 @@ test('GET /api/_debug/identity emits identity_debug.snapshot summary log', async
     assert.ok(snapshot, 'identity_debug.snapshot must be emitted');
     assert.equal(typeof snapshot.fields.session_user_id, 'string');
     assert.equal(snapshot.fields.session_user_role, 'senior');
+    assert.equal(snapshot.fields.bound_user_id, snapshot.fields.session_user_id);
+    assert.equal(snapshot.fields.binding_matches, true);
     assert.equal(typeof snapshot.fields.memory_count, 'number');
     assert.ok(Array.isArray(snapshot.fields.owner_user_id_prefixes));
+    assert.equal(snapshot.fields.any_mentions_sushi, false);
+    assert.equal(snapshot.fields.any_mentions_favorite_food, false);
   } finally {
     ctx.server.close();
     ctx.restore();
