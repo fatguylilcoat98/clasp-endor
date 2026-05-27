@@ -362,6 +362,108 @@ function createTestDoorWiring(options) {
   }
 
   /*
+   * getDebugSessionSnapshot — diagnostic surface for cross-account
+   * leak investigation. Returns the session's identity AS BOUND in
+   * the memory transaction (via current_setting()) plus a content-
+   * REDACTED memory snapshot with per-memory content-pattern flags.
+   *
+   * Content is NEVER returned. Per-memory pattern flags (mentions_
+   * sushi, mentions_favorite_food) let the operator confirm whether
+   * a "sushi" memory exists in the visible set without exposing
+   * memory text. Total length is included so the operator knows
+   * how much content was inspected.
+   *
+   * Gated by the caller — only the LYLO_DEBUG_IDENTITY=true admin
+   * endpoint invokes this. The wiring function itself does not gate
+   * (keeps the wiring layer policy-free; gating lives at the HTTP
+   * boundary in server.js).
+   */
+  async function getDebugSessionSnapshot(params) {
+    if (!params || typeof params !== 'object') {
+      throw new Error('getDebugSessionSnapshot: params object is required');
+    }
+    const { pilotInstanceId, userId, userRole, limit } = params;
+    if (typeof pilotInstanceId !== 'string' || !UUID_RE.test(pilotInstanceId)) {
+      const err = new Error('getDebugSessionSnapshot: pilotInstanceId must be a UUID');
+      err.userClass = 'bad_request';
+      throw err;
+    }
+    if (typeof userId !== 'string' || !UUID_RE.test(userId)) {
+      const err = new Error('getDebugSessionSnapshot: userId must be a UUID');
+      err.userClass = 'bad_request';
+      throw err;
+    }
+    if (typeof userRole !== 'string' || userRole.length === 0) {
+      const err = new Error('getDebugSessionSnapshot: userRole is required');
+      err.userClass = 'bad_request';
+      throw err;
+    }
+    const cap = Number.isInteger(limit) && limit > 0 && limit <= 100 ? limit : 50;
+    return await withMemoryContext(
+      memoryPool,
+      { pilotInstanceId, userId, userRole },
+      async (ctx) => {
+        const bound = await ctx.getBoundSessionVars();
+        const rows = await ctx.listMemoriesForInspector({ limit: cap });
+        const ownerSet = new Set();
+        let anyMentionsFavoriteFood = false;
+        let anyMentionsSushi = false;
+        const visibleMemories = rows.map((r) => {
+          const meta = computeInspectorMetadata(r, { userId, userRole });
+          if (typeof r.owning_user_id === 'string') ownerSet.add(r.owning_user_id);
+          const content = typeof r.content === 'string' ? r.content : '';
+          const lc = content.toLowerCase();
+          const mentionsFavoriteFood = /favorite\s+food/.test(lc);
+          const mentionsSushi = /\bsushi\b/.test(lc);
+          if (mentionsFavoriteFood) anyMentionsFavoriteFood = true;
+          if (mentionsSushi) anyMentionsSushi = true;
+          return {
+            idPrefix: typeof r.id === 'string' ? r.id.slice(0, 8) : null,
+            owningUserIdPrefix: typeof r.owning_user_id === 'string' ? r.owning_user_id.slice(0, 8) : null,
+            visibilityLevel: r.visibility_level,
+            authorityLevel: r.authority_level,
+            memoryStatus: r.memory_status,
+            active: r.active,
+            createdAt: r.created_at,
+            contentLength: content.length,
+            // Content-pattern flags. Booleans only — no excerpts.
+            mentionsFavoriteFood,
+            mentionsSushi,
+            // Visibility note from the inspector metadata.
+            whyVisible: meta.whyVisible,
+            // Flags (SUPERSEDED, INADMISSIBLE, CORRECTION, RETRACTION, …)
+            flags: meta.flags,
+          };
+        });
+        return {
+          // Session identity as the SERVER sees it (passed in).
+          sessionPilotInstanceId: pilotInstanceId,
+          sessionUserId: userId,
+          sessionUserRole: userRole,
+          // Session identity as the DATABASE sees it (bound inside
+          // the transaction via set_config). If these differ from
+          // the session_* values above, withMemoryContext is not
+          // doing what we think — the load-bearing claim of the
+          // whole RLS posture would be wrong. They MUST match.
+          boundPilotInstanceId: bound.boundPilotInstanceId,
+          boundUserId: bound.boundUserId,
+          boundUserRole: bound.boundUserRole,
+          bindingMatches:
+            bound.boundPilotInstanceId === pilotInstanceId
+            && bound.boundUserId === userId
+            && bound.boundUserRole === userRole,
+          memoryCount: visibleMemories.length,
+          distinctOwnerCount: ownerSet.size,
+          ownerUserIdPrefixes: Array.from(ownerSet).map((id) => id.slice(0, 8)),
+          anyMentionsFavoriteFood,
+          anyMentionsSushi,
+          visibleMemories,
+        };
+      }
+    );
+  }
+
+  /*
    * listGovernanceEvents — read-only audit-log surface for the
    * admin debug panel. Goes through withMemoryContext so RLS narrows
    * by the existing governance_audit_log policies. memory.list
@@ -510,6 +612,7 @@ function createTestDoorWiring(options) {
   return Object.freeze({
     handleChat,
     listMemoriesForInspector,
+    getDebugSessionSnapshot,
     listGovernanceEvents,
     listCircleContacts,
     addCircleContact,

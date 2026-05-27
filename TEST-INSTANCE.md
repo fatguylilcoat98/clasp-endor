@@ -148,6 +148,31 @@ To trace which of these is happening live, set `LYLO_DEBUG_IDENTITY=true` in the
 
 No memory content, user message text, or model response text appears in any of these events. The diagnostic is safe to leave on for a debugging session; turn it off in normal operation.
 
+**Per-account snapshot endpoint:** when `LYLO_DEBUG_IDENTITY=true` is set, the server also exposes `GET /api/_debug/identity` (returns 404 when the gate is off). Hit it from each suspect browser session — no model call, no memory content in the response, just the session's identity + a content-free memory metadata snapshot:
+
+```json
+{
+  "sessionUserId": "...",
+  "sessionUserRole": "senior",
+  "sessionCompanionLabel": null,
+  "memoryCount": 4,
+  "distinctOwnerCount": 1,
+  "visibleMemories": [
+    {
+      "idPrefix": "aaaaaaaa",
+      "owningUserIdPrefix": "...",
+      "visibilityLevel": "private",
+      "authorityLevel": "EXTRACTED",
+      "memoryStatus": "WORKING_ACTIVE",
+      "active": true,
+      "createdAt": "..."
+    }
+  ]
+}
+```
+
+The smoking-gun check for cross-account leakage: hit `/api/_debug/identity` from account A and account B. If `sessionUserId` differs but the two `visibleMemories` arrays share `idPrefix` values, you have an RLS bypass — collect those memory id prefixes and inspect them via `/api/admin/memories` (or via the database directly) to see the row's `owning_user_id` and `visibility_level`. If `sessionUserId` is **the same** across two browser sessions that used distinct emails, you have identity collapse — inspect the `identity_debug.auth.resolved` log lines from both sign-ins (now emitting `auth_user_id` in full and `email_masked` distinguishably) and compare.
+
 **Workflow** to diagnose `"Your name is Jill"`:
 
 1. Set `LYLO_DEBUG_IDENTITY=true`, redeploy.

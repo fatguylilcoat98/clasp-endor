@@ -89,6 +89,21 @@ function buildStubWiring() {
       };
     },
     listMemoriesForInspector: async () => [],
+    getDebugSessionSnapshot: async (params) => ({
+      sessionPilotInstanceId: params.pilotInstanceId,
+      sessionUserId: params.userId,
+      sessionUserRole: params.userRole,
+      boundPilotInstanceId: params.pilotInstanceId,
+      boundUserId: params.userId,
+      boundUserRole: params.userRole,
+      bindingMatches: true,
+      memoryCount: 0,
+      distinctOwnerCount: 0,
+      ownerUserIdPrefixes: [],
+      anyMentionsFavoriteFood: false,
+      anyMentionsSushi: false,
+      visibleMemories: [],
+    }),
     listGovernanceEvents: async () => [],
     listCircleContacts: async () => [],
     addCircleContact: async () => ({ id: 'x', contactUserId: 'y', visibilityLevels: [], createdAt: '' }),
@@ -288,6 +303,110 @@ test('LYLO_DEBUG_IDENTITY events never leak the user message text or response te
     );
     assert.ok(!allDebug.includes(SENTINEL),
       'identity_debug events must not include the user message text');
+  } finally {
+    ctx.server.close();
+    ctx.restore();
+  }
+});
+
+// ---------- /api/_debug/identity ----------
+
+test('GET /api/_debug/identity returns 404 when gate is OFF', async () => {
+  const ctx = await startServer({});
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'GET', '/api/_debug/identity', {
+      headers: { Cookie: cookieFromRes(login) },
+    });
+    assert.equal(r.statusCode, 404,
+      'debug endpoint must be invisible when LYLO_DEBUG_IDENTITY is off');
+  } finally {
+    ctx.server.close();
+    ctx.restore();
+  }
+});
+
+test('GET /api/_debug/identity requires a session when gate is ON', async () => {
+  const ctx = await startServer({ LYLO_DEBUG_IDENTITY: 'true' });
+  try {
+    const r = await req(ctx.port, 'GET', '/api/_debug/identity');
+    assert.equal(r.statusCode, 401);
+  } finally {
+    ctx.server.close();
+    ctx.restore();
+  }
+});
+
+test('GET /api/_debug/identity returns session identity + bound DB vars + content-free memory snapshot', async () => {
+  const ctx = await startServer({ LYLO_DEBUG_IDENTITY: 'true' });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const r = await req(ctx.port, 'GET', '/api/_debug/identity', {
+      headers: { Cookie: cookieFromRes(login) },
+    });
+    assert.equal(r.statusCode, 200);
+    assert.equal(typeof r.body.sessionUserId, 'string');
+    assert.equal(r.body.sessionUserRole, 'senior');
+    // Bound DB vars carried through — proves the session_user_id
+    // the server saw equals the value the database had bound.
+    assert.equal(r.body.boundUserId, r.body.sessionUserId);
+    assert.equal(r.body.bindingMatches, true);
+    // Sushi flag is present and false (stub returns no memories).
+    assert.equal(r.body.anyMentionsSushi, false);
+    assert.equal(r.body.anyMentionsFavoriteFood, false);
+    assert.ok(Array.isArray(r.body.visibleMemories));
+    // No memory content allowed anywhere in the response.
+    const dump = JSON.stringify(r.body);
+    assert.ok(!/"content"\s*:/.test(dump),
+      'debug endpoint must NOT include any memory content field');
+  } finally {
+    ctx.server.close();
+    ctx.restore();
+  }
+});
+
+test('GET /api/_debug/identity emits identity_debug.snapshot summary log with bound vars + sushi flags', async () => {
+  const ctx = await startServer({ LYLO_DEBUG_IDENTITY: 'true' });
+  try {
+    const login = await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    await req(ctx.port, 'GET', '/api/_debug/identity', {
+      headers: { Cookie: cookieFromRes(login) },
+    });
+    const snapshot = ctx.lines.find((l) => l.event === 'identity_debug.snapshot');
+    assert.ok(snapshot, 'identity_debug.snapshot must be emitted');
+    assert.equal(typeof snapshot.fields.session_user_id, 'string');
+    assert.equal(snapshot.fields.session_user_role, 'senior');
+    assert.equal(snapshot.fields.bound_user_id, snapshot.fields.session_user_id);
+    assert.equal(snapshot.fields.binding_matches, true);
+    assert.equal(typeof snapshot.fields.memory_count, 'number');
+    assert.ok(Array.isArray(snapshot.fields.owner_user_id_prefixes));
+    assert.equal(snapshot.fields.any_mentions_sushi, false);
+    assert.equal(snapshot.fields.any_mentions_favorite_food, false);
+  } finally {
+    ctx.server.close();
+    ctx.restore();
+  }
+});
+
+test('LYLO_DEBUG_IDENTITY=true: identity_debug.auth.resolved carries masked email + full auth_user_id', async () => {
+  const ctx = await startServer({ LYLO_DEBUG_IDENTITY: 'true' });
+  try {
+    await req(ctx.port, 'POST', '/api/login', {
+      body: { email: 'chris@test.example', password: 'hunter2hunter2' },
+    });
+    const auth = ctx.lines.find((l) => l.event === 'identity_debug.auth.resolved');
+    assert.ok(auth);
+    // Masked email keeps head + TLD only.
+    assert.equal(auth.fields.email_masked, 'c***@t***.example');
+    // Full auth_user_id is metadata — present in full.
+    assert.equal(typeof auth.fields.auth_user_id, 'string');
+    assert.ok(auth.fields.auth_user_id.length >= 32);
   } finally {
     ctx.server.close();
     ctx.restore();
