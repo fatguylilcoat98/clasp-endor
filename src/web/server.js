@@ -53,6 +53,32 @@ const { describeErrClass } = require('./wiring');
 const { verifySupabaseJwt } = require('./jwt-verify');
 const { normalizeEmail } = require('./identity');
 
+// LYLO_DEBUG_IDENTITY=true turns on a layered identity diagnostic
+// trace. Each chat turn emits a sequence of structured log events
+// stitched together by `trace_id` so an operator investigating a
+// suspected identity-contamination bug can see, in one place:
+//
+//   - the resolved authenticated identity (auth_user_id → public.users.id),
+//   - the cookie-derived session identity at chat time,
+//   - the constructed companionConfig that goes into the prompt,
+//   - the memory count + first 3 memory ids + their authority levels,
+//   - a SHA-256 fingerprint of the system prompt + identity excerpt.
+//
+// Off by default. Logs never include memory content, user message
+// content, model response content, JWTs, JWK material, or anything
+// the production privacy invariants forbid.
+const DEBUG_IDENTITY = String(process.env.LYLO_DEBUG_IDENTITY || '').toLowerCase() === 'true';
+
+function newTraceId() {
+  return (Date.now().toString(36)
+    + '-' + Math.random().toString(36).slice(2, 10));
+}
+
+function debugIdentity(log, event, fields) {
+  if (!DEBUG_IDENTITY) return;
+  log('info', `identity_debug.${event}`, fields || {});
+}
+
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_MESSAGE_BYTES = 8192;
 const MAX_DISPLAY_NAME_LEN = 64;
@@ -316,6 +342,19 @@ function createTestDoorServer(options) {
       is_new_user: resolved.isNewUser,
     });
 
+    debugIdentity(log, 'auth.resolved', {
+      pilot_instance_id: pilotInstanceId,
+      event_type: eventType,
+      auth_user_id_prefix: typeof authUserId === 'string' ? authUserId.slice(0, 8) : null,
+      resolved_user_id: resolved.userId,
+      resolved_role: resolved.userRole,
+      resolved_display_name_length: typeof resolved.displayName === 'string' ? resolved.displayName.length : 0,
+      signup_display_name_length: typeof displayName === 'string' ? displayName.length : 0,
+      companion_label_length: typeof companionLabel === 'string' ? companionLabel.length : 0,
+      companion_label_is_null: companionLabel === null,
+      is_new_user: resolved.isNewUser,
+    });
+
     return jsonResponse(
       res, 200,
       {
@@ -457,11 +496,35 @@ function createTestDoorServer(options) {
     }
 
     let bundle;
+    const traceId = newTraceId();
     try {
       const companionConfig = {
         name: session.companionLabel || 'Assistant',
         persona: 'You are a helpful and friendly AI companion.'
       };
+
+      // Layered identity-debug trace. Every event in this chat turn
+      // shares `trace_id` so a grep on the operator's logs surfaces
+      // the full identity story for one request in one place.
+      // No memory content, message content, or response content
+      // is logged here — only structural metadata.
+      debugIdentity(log, 'chat.session_view', {
+        trace_id: traceId,
+        pilot_instance_id: pilotInstanceId,
+        session_user_id: session.userId,
+        session_user_role: session.userRole,
+        session_display_name_length: typeof session.displayName === 'string' ? session.displayName.length : 0,
+        session_companion_label_length: typeof session.companionLabel === 'string' ? session.companionLabel.length : 0,
+        session_companion_label_value: session.companionLabel,
+        session_issued_at: session.issuedAt,
+        visibility_hint: visibilityHint,
+        message_byte_length: byteLength,
+      });
+      debugIdentity(log, 'chat.companion_config', {
+        trace_id: traceId,
+        companion_name: companionConfig.name,
+        companion_persona_length: companionConfig.persona.length,
+      });
 
       bundle = await wiring.handleChat({
         pilotInstanceId,
@@ -470,6 +533,7 @@ function createTestDoorServer(options) {
         userMessage,
         companionConfig,
         visibilityHint,
+        traceId,
       });
     } catch (err) {
       const errorClass = describeErrClass(err);

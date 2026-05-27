@@ -14,8 +14,43 @@
  * Graceful degradation with fallback to direct generation.
  */
 
+const crypto = require('node:crypto');
 const { buildPrompt } = require('./prompt');
 const { auditResponse } = require('./auditor');
+
+// LYLO_DEBUG_IDENTITY=true turns on identity-tracing logs for the
+// brain pipeline. See src/web/server.js for the full description.
+// Off by default. Logs never include memory content or message text;
+// they emit only counts, ids, authority levels, and a SHA-256 prefix
+// over the constructed system prompt so two requests can be compared
+// for identity-prompt drift without exposing the prompt itself.
+const DEBUG_IDENTITY = String(process.env.LYLO_DEBUG_IDENTITY || '').toLowerCase() === 'true';
+
+function debugIdentity(logger, event, fields) {
+  if (!DEBUG_IDENTITY || !logger || typeof logger.info !== 'function') return;
+  logger.info(`identity_debug.${event}`, fields || {});
+}
+
+function sha256Prefix(text) {
+  if (typeof text !== 'string' || text.length === 0) return null;
+  return crypto.createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 16);
+}
+
+// Extract only the identity-bearing lines from the system prompt
+// (the "You are X" intro and "Respond as X" closer). These are the
+// lines that determine the companion's identity — a "Your name is Y"
+// answer is almost always a leak from one of these.
+function extractPromptIdentityExcerpt(systemPrompt) {
+  if (typeof systemPrompt !== 'string') return null;
+  const lines = systemPrompt.split('\n');
+  const out = [];
+  for (const line of lines) {
+    if (/^you are\b/i.test(line) || /^respond as\b/i.test(line)) {
+      out.push(line.length > 160 ? line.slice(0, 160) + '…' : line);
+    }
+  }
+  return out.length ? out.join(' || ') : null;
+}
 
 // OpenAI for embeddings (Priority Filter and Memory Engine)
 let openaiClient = null;
@@ -741,6 +776,26 @@ async function processResponseGenerator(userMessage, brainState, modelClient, co
       messages: brainPrompt.messages,
     };
 
+    // Identity-debug: emit a SHA-256 fingerprint of the full system
+    // prompt + the identity-bearing lines extracted from it. Two
+    // sessions where the model produces "Your name is Jill" can be
+    // compared at this layer to determine whether the prompt itself
+    // contains "Jill" (companion contamination via the prompt) or
+    // whether the model hallucinated it (no "Jill" in prompt, but
+    // the model said it anyway). The hash lets the operator confirm
+    // identical-prompt vs distinct-prompt scenarios without logging
+    // the prompt text itself.
+    debugIdentity(logger, 'brain.prompt_fingerprint', {
+      trace_id: context.traceId || null,
+      pilot_instance_id: context.pilotInstanceId,
+      session_user_id: context.userId,
+      prompt_sha256_prefix: sha256Prefix(brainPrompt.system),
+      prompt_length: brainPrompt.system.length,
+      identity_excerpt: extractPromptIdentityExcerpt(brainPrompt.system),
+      memory_context_length: typeof memoryOutput.memoryContext === 'string'
+        ? memoryOutput.memoryContext.length : 0,
+    });
+
     const response = await modelClient.messages.create(sdkRequest);
     const responseText = extractResponseText(response);
 
@@ -928,7 +983,7 @@ async function processWithBrain(input, companionReader, modelClient, config, log
   const startTime = Date.now();
   const degradedRegions = [];
 
-  const { pilotInstanceId, userId, userRole, userMessage, memoryLimit, companionConfig } = input;
+  const { pilotInstanceId, userId, userRole, userMessage, memoryLimit, companionConfig, traceId } = input;
   const limit = memoryLimit || config.defaultMemoryLimit;
 
   try {
@@ -940,7 +995,29 @@ async function processWithBrain(input, companionReader, modelClient, config, log
       limit,
     });
 
-    const context = { companionConfig, pilotInstanceId, userId, userRole };
+    // Identity-debug: log the EXACT memory IDs + authority levels +
+    // owning-user-id-prefix that this user's session sees. Two
+    // distinct sessions producing identical memory id lists for the
+    // same prompt is the signature of an RLS bypass or a shared-
+    // cache leak. Memory content is NEVER logged.
+    debugIdentity(logger, 'brain.memory_retrieved', {
+      trace_id: traceId,
+      pilot_instance_id: pilotInstanceId,
+      session_user_id: userId,
+      session_user_role: userRole,
+      memory_count: memoryRows.length,
+      memory_ids_prefix: memoryRows.slice(0, 5).map((m) => ({
+        id_prefix: typeof m.id === 'string' ? m.id.slice(0, 8) : null,
+        owning_user_id_prefix: typeof m.owning_user_id === 'string' ? m.owning_user_id.slice(0, 8) : null,
+        authority_level: m.authority_level || null,
+        visibility_level: m.visibility_level || null,
+      })),
+      companion_name: companionConfig && companionConfig.name,
+      companion_persona_length: companionConfig && typeof companionConfig.persona === 'string'
+        ? companionConfig.persona.length : 0,
+    });
+
+    const context = { companionConfig, pilotInstanceId, userId, userRole, traceId };
 
     // Process through cognitive pipeline sequentially
     const priorityOutput = await processPriorityFilter(userMessage, context, logger);

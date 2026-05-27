@@ -131,7 +131,7 @@ function createTestDoorWiring(options) {
     if (!params || typeof params !== 'object') {
       throw new Error('handleChat: params object is required');
     }
-    const { pilotInstanceId, userId, userRole, userMessage, companionConfig, visibilityHint } = params;
+    const { pilotInstanceId, userId, userRole, userMessage, companionConfig, visibilityHint, traceId } = params;
     if (typeof pilotInstanceId !== 'string' || !UUID_RE.test(pilotInstanceId)) {
       const err = new Error('handleChat: pilotInstanceId must be a UUID');
       err.userClass = 'bad_request';
@@ -170,6 +170,7 @@ function createTestDoorWiring(options) {
       userRole,
       userMessage,
       companionConfig,
+      traceId,
     });
 
     // Store working memories from user message after successful response
