@@ -130,6 +130,34 @@ human. The hard claim: no path through the chat surface, the admin
 inspector, or the circle UI lets one user reach content the substrate
 forbids.
 
+### Identity-contamination diagnostics
+
+If you see the companion saying things like _"Your name is Jill"_ across two distinct accounts (different emails, different `users.id` values), it is **most likely** a prompt-construction issue, not an RLS bypass. The RLS contract suite is the strongest defence on the substrate side — that's been audited in PRs #6–#10. The remaining sources of cross-account leakage are at the runtime layer:
+
+1. **Cookie-derived companion name** — `session.companionLabel` is set from the signup `companionName` field. If two accounts both signed up with `companionName="Jill"`, both prompts say `You are Jill, a companion assistant.` The model may then conflate _the AI's name_ with _the user's name_ when asked "what's my name?".
+2. **Memory contamination** — a memory containing "My name is Jill" surfacing to a user who is not its owner. Should be impossible under current RLS; the RLS contract suite specifically tests this. Inspect with `/api/admin/memories` (admin only) — the inspector goes through the same `withMemoryContext` call as chat, so what you see is exactly what the brain saw.
+3. **Model hallucination** — with empty memory context, the model can fabricate names from training data. Same name across distinct accounts is unusual but possible with a fixed temperature and similar prompts.
+
+To trace which of these is happening live, set `LYLO_DEBUG_IDENTITY=true` in the runtime env. This turns on a layered diagnostic trace (off by default, no log output otherwise) emitting structured events tagged with a per-request `trace_id`:
+
+- `identity_debug.auth.resolved` — at signup/login, records the resolved `users.id`, role, and whether `companionLabel` was provided.
+- `identity_debug.chat.session_view` — at every chat turn, records what the session cookie carries: `session_user_id`, `session_user_role`, `session_companion_label_value` (the AI's name).
+- `identity_debug.chat.companion_config` — the `companionConfig` constructed for the brain. `companion_name` is the AI's name as it will appear in the prompt.
+- `identity_debug.brain.memory_retrieved` — the brain's view of retrieved memories: `memory_count`, the first 5 memory ids + their `owning_user_id_prefix` + `authority_level` + `visibility_level`. Cross-checks the RLS narrowing.
+- `identity_debug.brain.prompt_fingerprint` — a SHA-256 prefix of the final system prompt + the identity-bearing lines extracted ("You are X" and "Respond as X"). Two distinct sessions producing identical `prompt_sha256_prefix` for the same message indicates an identical prompt — and an `identity_excerpt` containing "Jill" means the prompt itself names the companion Jill.
+
+No memory content, user message text, or model response text appears in any of these events. The diagnostic is safe to leave on for a debugging session; turn it off in normal operation.
+
+**Workflow** to diagnose `"Your name is Jill"`:
+
+1. Set `LYLO_DEBUG_IDENTITY=true`, redeploy.
+2. Reproduce the bug with both accounts.
+3. Grep the logs for `identity_debug.brain.prompt_fingerprint` for each request — note the `trace_id` so you can link.
+4. Compare `identity_excerpt` across the two requests:
+   - Both say `You are Jill, a companion assistant.` → cookie/signup contamination. Inspect `identity_debug.chat.session_view.session_companion_label_value` — the signup wrote "Jill" as the companion name.
+   - Both say `You are Assistant, a companion assistant.` but the response still has "Jill" → the model is hallucinating from training data. The fix is at the prompt level (e.g. add explicit "you do not know the user's name unless they tell you" to the persona), not at the substrate.
+   - One says Jill and one says Assistant but both response say "Jill" → one is contamination + one is hallucination; investigate both signups.
+
 ### Setup
 
 1. `npm run boot:web` against a localhost test database (migrations
